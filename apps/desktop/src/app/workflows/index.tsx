@@ -47,6 +47,7 @@ import {
   listWorkflowEvents,
   listWorkflowProjects,
   pauseWorkflowRun,
+  returnWorkflowNode,
   retryWorkflowNode,
   saveWorkflow,
   sendWorkflowChat,
@@ -68,6 +69,7 @@ import type {
   ProjectBundle,
   ProjectListResponse,
   ReferenceItem,
+  ReviewDecision,
   SkillBinding,
   StreamEvent,
   VersionSnapshot,
@@ -136,6 +138,8 @@ const EVENT_ICON: Record<StreamEvent['type'], string> = {
   stage_result: 'checklist',
   tool_call: 'tools'
 }
+
+const STREAM_BOTTOM_THRESHOLD = 48
 
 const DEFAULT_SKILLS: SkillBinding[] = [
   { id: 'planner', name: 'planner', enabled: true, source: 'hermes' },
@@ -436,9 +440,29 @@ function WorkflowWorkbench() {
   })
 
   const nodeActionMutation = useMutation({
-    mutationFn: ({ action, nodeId, runId }: { action: 'confirm' | 'retry' | 'skip'; nodeId: string; runId: string }) => {
+    mutationFn: ({
+      action,
+      nodeId,
+      reason,
+      runId,
+      targetNodeId
+    }: {
+      action: 'confirm' | 'retry' | 'skip' | 'return'
+      nodeId: string
+      reason?: string
+      runId: string
+      targetNodeId?: string
+    }) => {
       if (action === 'confirm') {
         return confirmWorkflowNode(runId, nodeId)
+      }
+
+      if (action === 'return') {
+        if (!targetNodeId) {
+          throw new Error('Return target is required')
+        }
+
+        return returnWorkflowNode(runId, nodeId, { reason, targetNodeId })
       }
 
       if (action === 'retry') {
@@ -707,10 +731,10 @@ function WorkflowWorkbench() {
               referencesMutation.mutate(next)
             }}
             onClose={() => setDrawerMode('task')}
-            onNodeAction={(action, nodeId, runId) => {
+            onNodeAction={(action, nodeId, runId, payload) => {
               setAutoFollowRunNode(true)
-              setSelectedNodeId(nodeId)
-              nodeActionMutation.mutate({ action, nodeId, runId })
+              setSelectedNodeId(payload?.targetNodeId ?? nodeId)
+              nodeActionMutation.mutate({ action, nodeId, runId, ...payload })
             }}
             onOpenFile={openPath}
             onSaveNode={saveNodeConfig}
@@ -733,6 +757,7 @@ function WorkflowWorkbench() {
             selectedFilePath={selectedFilePath}
             skills={bundle?.skills.length ? bundle.skills : DEFAULT_SKILLS}
             snapshots={bundle?.snapshots ?? []}
+            workflow={workflow}
           />
         )}
           </div>
@@ -1071,7 +1096,8 @@ function RightDrawer({
   root,
   selectedFilePath,
   skills,
-  snapshots
+  snapshots,
+  workflow
 }: {
   activeRun: ProjectBundle['latestRun']
   artifacts: ProjectBundle['artifacts']
@@ -1086,7 +1112,12 @@ function RightDrawer({
   onOpenFile: (path: string) => void
   onSaveNode: (node: WorkflowNode) => void
   onSelectFile: (path: string) => void
-  onNodeAction: (action: 'confirm' | 'retry' | 'skip', nodeId: string, runId: string) => void
+  onNodeAction: (
+    action: 'confirm' | 'retry' | 'skip' | 'return',
+    nodeId: string,
+    runId: string,
+    payload?: { reason?: string; targetNodeId?: string }
+  ) => void
   onSnapshot: () => void
   onToggleReference: (reference: ReferenceItem, enabled: boolean) => void
   onToggleSkill: (skill: SkillBinding, enabled: boolean) => void
@@ -1095,6 +1126,7 @@ function RightDrawer({
   selectedFilePath: string | null
   skills: SkillBinding[]
   snapshots: VersionSnapshot[]
+  workflow: Workflow | null
 }) {
   const [width, setWidth] = useState(readStoredRightDrawerWidth)
 
@@ -1138,6 +1170,7 @@ function RightDrawer({
           onSaveNode={onSaveNode}
           root={root}
           selectedFilePath={selectedFilePath}
+          workflow={workflow}
         />
       )}
       {mode === 'files' && (
@@ -1170,18 +1203,25 @@ function TaskDetailDrawer({
   onOpenFile,
   onSaveNode,
   root,
-  selectedFilePath
+  selectedFilePath,
+  workflow
 }: {
   activeRun: ProjectBundle['latestRun']
   artifacts: ProjectBundle['artifacts']
   availableSkills: SkillInfo[]
   modelOptions: ModelOptionsResponse | null
   node: WorkflowNode | null
-  onNodeAction: (action: 'confirm' | 'retry' | 'skip', nodeId: string, runId: string) => void
+  onNodeAction: (
+    action: 'confirm' | 'retry' | 'skip' | 'return',
+    nodeId: string,
+    runId: string,
+    payload?: { reason?: string; targetNodeId?: string }
+  ) => void
   onOpenFile: (path: string) => void
   onSaveNode: (node: WorkflowNode) => void
   root?: string
   selectedFilePath: string | null
+  workflow: Workflow | null
 }) {
   const copy = useWorkflowCopy()
   const [draft, setDraft] = useState<WorkflowNode | null>(node)
@@ -1189,6 +1229,22 @@ function TaskDetailDrawer({
   const [referencesOpen, setReferencesOpen] = useState(false)
   const [changesOpen, setChangesOpen] = useState(true)
   const [openFilePreviews, setOpenFilePreviews] = useState<Set<string>>(new Set())
+  const [promptEditing, setPromptEditing] = useState(false)
+  const [promptDraft, setPromptDraft] = useState('')
+  const [returnTargetId, setReturnTargetId] = useState('')
+  const feedbackTargets = useMemo(() => {
+    if (!workflow || !node) {
+      return []
+    }
+
+    return workflow.edges
+      .filter(edge => edge.type === 'feedback' && edge.source === node.id)
+      .map(edge => ({
+        edge,
+        node: workflow.nodes.find(candidate => candidate.id === edge.target) ?? null
+      }))
+      .filter((item): item is { edge: WorkflowEdge; node: WorkflowNode } => Boolean(item.node))
+  }, [node, workflow])
 
   useEffect(() => {
     setDraft(node)
@@ -1196,7 +1252,20 @@ function TaskDetailDrawer({
     setReferencesOpen(false)
     setChangesOpen(true)
     setOpenFilePreviews(new Set())
+    setPromptEditing(false)
+    setPromptDraft(node?.promptOverride || node?.description || '')
+    setReturnTargetId('')
   }, [node])
+
+  useEffect(() => {
+    setReturnTargetId(current => {
+      if (current && feedbackTargets.some(item => item.node.id === current)) {
+        return current
+      }
+
+      return feedbackTargets[0]?.node.id ?? ''
+    })
+  }, [feedbackTargets])
 
   if (!node) {
     return (
@@ -1216,6 +1285,9 @@ function TaskDetailDrawer({
   const references = editable.references ?? []
   const fileChanges = editable.fileChanges ?? []
   const selectedFileForReference = selectedFilePath && root ? normalizeProjectReference(root, selectedFilePath) : selectedFilePath
+  const effectivePrompt = editable.promptOverride || node.description || copy.taskPlaceholder
+  const selectedReturnTarget = feedbackTargets.find(item => item.node.id === returnTargetId) ?? feedbackTargets[0] ?? null
+  const reviewDecision = parseReviewDecision(node.outputs?.reviewDecision)
 
   const updateDraft = (updates: Partial<WorkflowNode>) => {
     setDraft(current => ({ ...(current ?? node), ...updates }))
@@ -1250,6 +1322,25 @@ function TaskDetailDrawer({
     })
   }
 
+  const beginPromptEditing = () => {
+    setPromptDraft(effectivePrompt)
+    setPromptEditing(true)
+  }
+
+  const cancelPromptEditing = () => {
+    setPromptDraft(effectivePrompt)
+    setPromptEditing(false)
+  }
+
+  const confirmPromptEditing = () => {
+    const nextPrompt = promptDraft.trim()
+    const nextNode = { ...editable, promptOverride: nextPrompt || null }
+
+    setDraft(nextNode)
+    onSaveNode(nextNode)
+    setPromptEditing(false)
+  }
+
   return (
     <div className="workflow-task-detail">
       <div className="workflow-drawer-header">
@@ -1264,23 +1355,34 @@ function TaskDetailDrawer({
       <section>
         <div className="workflow-section-header">
           <h3>{copy.editExecutionPrompt}</h3>
-          <Button
-            disabled={!draft}
-            onClick={() => draft && onSaveNode({ ...draft, promptOverride: draft.promptOverride?.trim() || null })}
-            size="xs"
-            type="button"
-          >
-            <Codicon name="save" size="0.8125rem" />
-            {copy.save}
-          </Button>
         </div>
-        <Textarea
-          className="workflow-prompt-editor"
-          onChange={event => updateDraft({ promptOverride: event.target.value })}
-          placeholder={node.description || copy.taskPlaceholder}
-          value={editable.promptOverride ?? ''}
-        />
-        <p className="workflow-muted">{node.description}</p>
+        {promptEditing ? (
+          <div className="workflow-prompt-editor-panel">
+            <Textarea
+              className="workflow-prompt-editor"
+              onChange={event => setPromptDraft(event.target.value)}
+              placeholder={copy.taskPlaceholder}
+              value={promptDraft}
+            />
+            <div className="workflow-prompt-editor-actions">
+              <Button aria-label={copy.cancelPromptEditing} onClick={cancelPromptEditing} size="xs" type="button" variant="outline">
+                {copy.cancel}
+              </Button>
+              <Button aria-label={copy.confirmPromptChanges} onClick={confirmPromptEditing} size="xs" type="button">
+                <Codicon name="check" size="0.8125rem" />
+                {copy.confirm}
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <div className="workflow-prompt-display">
+            <div className="workflow-prompt-display__text">{effectivePrompt}</div>
+            <Button className="workflow-prompt-display__edit" onClick={beginPromptEditing} size="xs" type="button" variant="outline">
+              <Codicon name="edit" size="0.8125rem" />
+              {copy.edit}
+            </Button>
+          </div>
+        )}
       </section>
 
       <section>
@@ -1298,6 +1400,23 @@ function TaskDetailDrawer({
           </strong>
         </div>
       </section>
+
+      {reviewDecision && (
+        <section className="workflow-review-decision">
+          <h3>{copy.reviewDecision}</h3>
+          <div className="workflow-key-values">
+            <span>{copy.reviewDecisionStatus}</span>
+            <strong>{reviewDecisionLabel(copy, reviewDecision.decision)}</strong>
+            {reviewDecision.targetNodeId ? (
+              <>
+                <span>{copy.returnTarget}</span>
+                <strong>{workflow?.nodes.find(candidate => candidate.id === reviewDecision.targetNodeId)?.title ?? reviewDecision.targetNodeId}</strong>
+              </>
+            ) : null}
+          </div>
+          {reviewDecision.reason ? <p>{reviewDecision.reason}</p> : null}
+        </section>
+      )}
 
       <section>
         <h3>{copy.executionModel}</h3>
@@ -1498,6 +1617,43 @@ function TaskDetailDrawer({
       </div>
 
       <div className="workflow-node-actions">
+        {waiting && feedbackTargets.length > 0 && (
+          <div className="workflow-return-controls">
+            {feedbackTargets.length > 1 ? (
+              <Select onValueChange={setReturnTargetId} value={selectedReturnTarget?.node.id ?? ''}>
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue placeholder={copy.returnTarget} />
+                </SelectTrigger>
+                <SelectContent>
+                  {feedbackTargets.map(item => (
+                    <SelectItem key={item.node.id} value={item.node.id}>
+                      {item.edge.label ? `${item.node.title} · ${item.edge.label}` : item.node.title}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            ) : (
+              <span title={selectedReturnTarget?.node.id}>{copy.returnTarget}: {selectedReturnTarget?.node.title}</span>
+            )}
+            <Button
+              disabled={!runId || !selectedReturnTarget}
+              onClick={() =>
+                runId &&
+                selectedReturnTarget &&
+                onNodeAction('return', node.id, runId, {
+                  reason: `${copy.returnForRevision}: ${selectedReturnTarget.node.title}`,
+                  targetNodeId: selectedReturnTarget.node.id
+                })
+              }
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              <Codicon name="reply" size="0.875rem" />
+              {copy.returnForRevision}
+            </Button>
+          </div>
+        )}
         <Button disabled={!waiting || !runId} onClick={() => runId && onNodeAction('confirm', node.id, runId)} size="sm" type="button">
           <Codicon name="pass" size="0.875rem" />
           {copy.confirm}
@@ -1650,17 +1806,64 @@ function StreamOutputPanel({
   wsHealthy: boolean
 }) {
   const copy = useWorkflowCopy()
+  const transcriptRef = useRef<HTMLDivElement | null>(null)
+  const transcriptEndRef = useRef<HTMLDivElement | null>(null)
   const [height, setHeight] = useState(() => {
     const stored = Number(window.localStorage.getItem('hermes.workflow.streamHeight') || 260)
 
     return Number.isFinite(stored) ? Math.min(Math.max(stored, 160), Math.round(window.innerHeight * 0.6)) : 260
   })
+  const [isPinnedToBottom, setIsPinnedToBottom] = useState(true)
+  const [showLatestButton, setShowLatestButton] = useState(false)
 
   const transcript = useMemo(() => streamTranscriptItems(events), [events])
+  const latestTranscript = transcript.at(-1)
+  const latestTranscriptKey = latestTranscript ? `${latestTranscript.id}:${latestTranscript.timestamp}` : ''
 
   useEffect(() => {
     window.localStorage.setItem('hermes.workflow.streamHeight', String(height))
   }, [height])
+
+  useEffect(() => {
+    if (expanded) {
+      return
+    }
+
+    setIsPinnedToBottom(true)
+    setShowLatestButton(false)
+  }, [expanded])
+
+  const scrollToLatest = useCallback((behavior: ScrollBehavior = 'smooth') => {
+    setIsPinnedToBottom(true)
+    setShowLatestButton(false)
+    requestAnimationFrame(() => {
+      transcriptEndRef.current?.scrollIntoView({ block: 'end', behavior })
+    })
+  }, [])
+
+  const handleTranscriptScroll = useCallback(() => {
+    const transcriptElement = transcriptRef.current
+
+    if (!transcriptElement) {
+      return
+    }
+
+    const pinned = streamIsNearBottom(transcriptElement)
+    setIsPinnedToBottom(pinned)
+    setShowLatestButton(!pinned && transcript.length > 0)
+  }, [transcript.length])
+
+  useEffect(() => {
+    if (!expanded) {
+      return
+    }
+
+    if (isPinnedToBottom) {
+      scrollToLatest('auto')
+    } else if (transcript.length) {
+      setShowLatestButton(true)
+    }
+  }, [expanded, isPinnedToBottom, latestTranscriptKey, scrollToLatest, transcript.length])
 
   const beginResize = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
@@ -1707,7 +1910,7 @@ function StreamOutputPanel({
         </div>
       </div>
       {expanded && (
-        <div className="workflow-stream-transcript">
+        <div className="workflow-stream-transcript" onScroll={handleTranscriptScroll} ref={transcriptRef}>
           {transcript.length ? (
             transcript.map(item =>
               item.kind === 'assistant' ? (
@@ -1733,7 +1936,14 @@ function StreamOutputPanel({
           ) : (
             <div className="workflow-muted">{copy.runSummaryEmpty}</div>
           )}
+          <div aria-hidden className="workflow-stream-transcript__end" ref={transcriptEndRef} />
         </div>
+      )}
+      {expanded && showLatestButton && (
+        <Button className="workflow-latest-messages" onClick={() => scrollToLatest()} size="xs" type="button" variant="outline">
+          <Codicon name="arrow-down" size="0.8125rem" />
+          {copy.latestMessages}
+        </Button>
       )}
     </section>
   )
@@ -2318,11 +2528,13 @@ function toFlowNodes(workflow: Workflow): FlowNode[] {
 }
 
 function toFlowEdges(workflow: Workflow): FlowEdge[] {
+  const nodeTitles = new Map(workflow.nodes.map(node => [node.id, node.title]))
+
   return workflow.edges.map(edge => ({
     id: edge.id,
     source: edge.source,
     target: edge.target,
-    label: edge.label || undefined,
+    label: edge.label || (edge.type === 'feedback' ? `Return to ${nodeTitles.get(edge.target) ?? edge.target}` : undefined),
     type: edge.type === 'feedback' ? 'smoothstep' : 'default',
     animated: edge.type === 'feedback',
     markerEnd: edge.type === 'feedback' ? undefined : { type: MarkerType.ArrowClosed },
@@ -2390,6 +2602,40 @@ function latestWorkflowRuntimeNodeId(activeRun: ProjectBundle['latestRun'], even
 
 function fileChangeCanPreview(change: WorkflowNode['fileChanges'][number]): boolean {
   return change.previewable !== false && !change.isBinary && Boolean(change.diff)
+}
+
+function parseReviewDecision(value: unknown): ReviewDecision | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const data = value as Record<string, unknown>
+  const rawDecision = typeof data.decision === 'string' ? data.decision : ''
+  if (rawDecision !== 'pass' && rawDecision !== 'return' && rawDecision !== 'needs_human') {
+    return null
+  }
+
+  return {
+    decision: rawDecision,
+    targetNodeId: typeof data.targetNodeId === 'string' ? data.targetNodeId : null,
+    reason: typeof data.reason === 'string' ? data.reason : ''
+  }
+}
+
+function reviewDecisionLabel(copy: WorkflowCopy, decision: ReviewDecision['decision']): string {
+  if (decision === 'pass') {
+    return copy.reviewDecisionPass
+  }
+
+  if (decision === 'return') {
+    return copy.reviewDecisionReturn
+  }
+
+  return copy.reviewDecisionNeedsHuman
+}
+
+function streamIsNearBottom(element: HTMLElement): boolean {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= STREAM_BOTTOM_THRESHOLD
 }
 
 type WorkflowTranscriptItem =

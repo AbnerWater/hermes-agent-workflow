@@ -129,6 +129,175 @@ class FakeWorkflowAgentRunner:
         )
 
 
+def _fake_git_for_workflow_tests(_root, *args):
+    if args[:2] == ("rev-parse", "HEAD"):
+        return "c" * 40
+    if args and args[0] == "log":
+        return f"{'c' * 40}\x1f1700000000\x1fworkflow: test"
+    return ""
+
+
+def _feedback_workflow(wf, *, review_status="waiting_user_confirm"):
+    return wf.Workflow(
+        id="wf_feedback",
+        title="Feedback Workflow",
+        nodes=[
+            wf.WorkflowNode(id="plan", type="planning", title="Plan", status="completed", maxRetries=2),
+            wf.WorkflowNode(id="implement", type="execution", title="Implement", status="completed", maxRetries=2),
+            wf.WorkflowNode(
+                id="review",
+                type="review",
+                title="Review",
+                status=review_status,
+                reviewRules=wf.ReviewRules(required=True, checklist=["passes"]),
+            ),
+            wf.WorkflowNode(id="delivery", type="delivery", title="Delivery", status="created"),
+        ],
+        edges=[
+            wf.WorkflowEdge(id="edge-plan-implement", source="plan", target="implement"),
+            wf.WorkflowEdge(id="edge-implement-review", source="implement", target="review"),
+            wf.WorkflowEdge(id="edge-review-delivery", source="review", target="delivery"),
+            wf.WorkflowEdge(id="edge-review-plan", source="review", target="plan", type="feedback", label="Revise plan"),
+        ],
+    )
+
+
+def _create_feedback_project(tmp_path, monkeypatch):
+    from hermes_cli import workflow_api as wf
+
+    monkeypatch.setattr(wf, "_git_init", lambda _root: None)
+    monkeypatch.setattr(wf, "_git", _fake_git_for_workflow_tests)
+    monkeypatch.setattr(wf._runtime, "start", lambda *_args, **_kwargs: None)
+    project = wf._create_project(wf.ProjectCreateRequest(name="Feedback Workflow", root=str(tmp_path / "feedback")))
+    wf._register_project(project)
+    workflow = _feedback_workflow(wf)
+    wf._save_workflow(project, workflow)
+    run = wf.ExecutionRun(
+        id="run_feedback",
+        projectId=project.id,
+        mode="semi_auto",
+        status="waiting_user_confirm",
+        currentNodeId="review",
+    )
+    wf._save_run(run)
+    return wf, project, workflow, run
+
+
+def test_workflow_feedback_confirm_promotes_normal_downstream(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    wf, project, _workflow, run = _create_feedback_project(tmp_path, monkeypatch)
+    app = FastAPI()
+    app.include_router(wf.create_workflow_router(lambda _ws: True))
+    client = TestClient(app)
+
+    response = client.post(f"/api/workflows/runs/{run.id}/nodes/review/confirm")
+
+    assert response.status_code == 200
+    updated = wf._load_workflow(project)
+    statuses = {node.id: node.status for node in updated.nodes}
+    assert statuses["plan"] == "completed"
+    assert statuses["implement"] == "completed"
+    assert statuses["review"] == "completed"
+    assert statuses["delivery"] == "ready"
+
+
+def test_workflow_feedback_return_resets_rework_path(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    wf, project, _workflow, run = _create_feedback_project(tmp_path, monkeypatch)
+    app = FastAPI()
+    app.include_router(wf.create_workflow_router(lambda _ws: True))
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/workflows/runs/{run.id}/nodes/review/return",
+        json={"targetNodeId": "plan", "reason": "Acceptance checks failed."},
+    )
+
+    assert response.status_code == 200
+    updated = wf._load_workflow(project)
+    by_id = {node.id: node for node in updated.nodes}
+    updated_run = wf._load_run(run.id)
+    assert by_id["plan"].status == "ready"
+    assert by_id["plan"].retryCount == 1
+    assert by_id["implement"].status == "revision_needed"
+    assert by_id["review"].status == "revision_needed"
+    assert by_id["delivery"].status == "created"
+    assert by_id["review"].outputs["returnTargetId"] == "plan"
+    assert by_id["review"].outputs["reviewDecision"]["decision"] == "return"
+    assert updated_run.status == "running"
+    assert updated_run.currentNodeId == "plan"
+
+
+def test_workflow_feedback_return_rejects_invalid_target(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    wf, _project, _workflow, run = _create_feedback_project(tmp_path, monkeypatch)
+    app = FastAPI()
+    app.include_router(wf.create_workflow_router(lambda _ws: True))
+    client = TestClient(app)
+
+    response = client.post(
+        f"/api/workflows/runs/{run.id}/nodes/review/return",
+        json={"targetNodeId": "delivery", "reason": "Invalid return."},
+    )
+
+    assert response.status_code == 422
+
+
+def test_workflow_auto_review_pass_and_return_decisions(tmp_path, monkeypatch):
+    from hermes_cli import workflow_api as wf
+
+    class ReviewDecisionRunner:
+        def __init__(self, text):
+            self.text = text
+
+        def run(self, *, session_id, **_kwargs):
+            return wf.WorkflowAgentResult(session_id=session_id, text=self.text)
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(wf, "_git_init", lambda _root: None)
+    monkeypatch.setattr(wf, "_git", _fake_git_for_workflow_tests)
+
+    pass_project = wf._create_project(wf.ProjectCreateRequest(name="Auto Pass", root=str(tmp_path / "auto-pass")))
+    wf._register_project(pass_project)
+    pass_workflow = _feedback_workflow(wf, review_status="ready")
+    wf._save_workflow(pass_project, pass_workflow)
+    pass_run = wf.ExecutionRun(id="run_auto_pass", projectId=pass_project.id, mode="auto", status="running")
+    wf._save_run(pass_run)
+    monkeypatch.setattr(
+        wf,
+        "_agent_runner",
+        ReviewDecisionRunner('<workflow_review_decision>{"decision":"pass","targetNodeId":null,"reason":"All checks passed."}</workflow_review_decision>'),
+    )
+    wf._execute_node(pass_project, pass_workflow, pass_run, wf._node_by_id(pass_workflow, "review"))
+    pass_statuses = {node.id: node.status for node in wf._load_workflow(pass_project).nodes}
+    assert pass_statuses["review"] == "completed"
+    assert pass_statuses["delivery"] == "ready"
+
+    return_project = wf._create_project(wf.ProjectCreateRequest(name="Auto Return", root=str(tmp_path / "auto-return")))
+    wf._register_project(return_project)
+    return_workflow = _feedback_workflow(wf, review_status="ready")
+    wf._save_workflow(return_project, return_workflow)
+    return_run = wf.ExecutionRun(id="run_auto_return", projectId=return_project.id, mode="auto", status="running")
+    wf._save_run(return_run)
+    monkeypatch.setattr(
+        wf,
+        "_agent_runner",
+        ReviewDecisionRunner('<workflow_review_decision>{"decision":"return","targetNodeId":"plan","reason":"Coverage gap."}</workflow_review_decision>'),
+    )
+    wf._execute_node(return_project, return_workflow, return_run, wf._node_by_id(return_workflow, "review"))
+    return_by_id = {node.id: node for node in wf._load_workflow(return_project).nodes}
+    assert return_by_id["plan"].status == "ready"
+    assert return_by_id["plan"].retryCount == 1
+    assert return_by_id["implement"].status == "revision_needed"
+    assert return_by_id["review"].status == "revision_needed"
+
+
 def test_workflow_project_generate_and_run_reaches_review_gate(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
 

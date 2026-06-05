@@ -700,6 +700,7 @@
 }
 
 .workflow-stream-transcript {
+  position: relative;
   display: flex;
   height: calc(100% - 2.4rem);
   min-height: 0;
@@ -707,6 +708,22 @@
   gap: 0.625rem;
   overflow: auto;
   padding: 0.25rem 1rem 0.875rem;
+}
+
+.workflow-stream-transcript__end {
+  flex: 0 0 1px;
+  width: 100%;
+}
+
+.workflow-latest-messages {
+  position: absolute;
+  right: 1rem;
+  bottom: 0.875rem;
+  z-index: 7;
+  border-color: color-mix(in srgb, var(--ui-blue) 24%, var(--ui-stroke-quaternary));
+  background: color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 92%, var(--ui-chat-surface-background));
+  box-shadow: 0 0.375rem 1rem color-mix(in srgb, var(--ui-base) 16%, transparent);
+  color: var(--ui-text-primary);
 }
 
 .workflow-transcript-message {
@@ -987,6 +1004,43 @@
   line-height: 1.45;
 }
 
+.workflow-prompt-editor-panel {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.workflow-prompt-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.workflow-prompt-display {
+  position: relative;
+  min-height: 7rem;
+  border: 1px solid var(--ui-stroke-quaternary);
+  border-radius: 0.375rem;
+  background: color-mix(in srgb, var(--ui-bg-card) 86%, var(--ui-chat-surface-background));
+}
+
+.workflow-prompt-display__text {
+  max-height: 12rem;
+  min-height: 7rem;
+  overflow: auto;
+  padding: 0.625rem 0.75rem 2.75rem;
+  color: var(--ui-text-secondary);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.workflow-prompt-display__edit {
+  position: absolute;
+  right: 0.5rem;
+  bottom: 0.5rem;
+  background: color-mix(in srgb, var(--ui-bg-elevated, var(--ui-bg-card)) 94%, var(--ui-chat-surface-background));
+}
+
 .workflow-task-detail p {
   color: var(--ui-text-secondary);
   font-size: 0.8125rem;
@@ -1011,6 +1065,19 @@
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.workflow-review-decision {
+  border-radius: 0.5rem;
+  border: 1px solid var(--ui-stroke-tertiary);
+  background: color-mix(in srgb, var(--ui-bg-card) 86%, var(--ui-chat-surface-background));
+  padding: 0.625rem;
+}
+
+.workflow-review-decision p {
+  margin: 0.5rem 0 0;
+  color: var(--ui-text-secondary);
+  font-size: 0.75rem;
 }
 
 .workflow-checklist {
@@ -1147,6 +1214,7 @@
 .workflow-node-actions {
   display: flex;
   flex-shrink: 0;
+  flex-wrap: wrap;
   gap: 0.5rem;
   border-top: 1px solid var(--ui-stroke-tertiary);
   background: color-mix(in srgb, var(--ui-sidebar-surface-background) 88%, var(--ui-chat-surface-background));
@@ -1155,6 +1223,23 @@
 
 .workflow-node-actions > button {
   flex: 1;
+}
+
+.workflow-return-controls {
+  display: grid;
+  width: 100%;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+}
+
+.workflow-return-controls > span {
+  min-width: 0;
+  align-self: center;
+  overflow: hidden;
+  color: var(--ui-text-secondary);
+  font-size: 0.75rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .workflow-check-row span {

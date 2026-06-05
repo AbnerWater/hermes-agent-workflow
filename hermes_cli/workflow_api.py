@@ -87,6 +87,12 @@ class NodeFileChange(BaseModel):
     previewable: bool = True
 
 
+class ReviewDecision(BaseModel):
+    decision: Literal["pass", "return", "needs_human"] = "needs_human"
+    targetNodeId: Optional[str] = None
+    reason: str = ""
+
+
 class WorkflowNode(BaseModel):
     id: str
     type: str = "task"
@@ -283,6 +289,11 @@ class WorkflowUpdateRequest(BaseModel):
 class RunCreateRequest(BaseModel):
     mode: ExecutionMode = "semi_auto"
     maxConcurrency: int = 2
+
+
+class NodeReturnRequest(BaseModel):
+    targetNodeId: str
+    reason: str = ""
 
 
 class ChatRequest(BaseModel):
@@ -878,29 +889,21 @@ def create_workflow_router(ws_auth_ok: Callable[[WebSocket], bool]) -> APIRouter
         node = _node_by_id(workflow, node_id)
         if node.status not in {"waiting_user_confirm", "reviewing"}:
             raise HTTPException(status_code=409, detail="Node is not waiting for confirmation")
-        node.status = "completed"
-        node.outputs["confirmedAt"] = time.time()
-        _promote_ready_nodes(workflow)
-        _save_workflow(project, workflow)
-        run.status = "running"
-        run.updatedAt = time.time()
-        _save_run(run)
-        _append_event(
-            project.id,
-            StreamEvent(
-                id=_new_id("evt"),
-                projectId=project.id,
-                runId=run.id,
-                nodeId=node.id,
-                type="approval",
-                label="节点已确认",
-                summary=f"已确认「{node.title}」，调度器继续推进下游节点。",
-                status="success",
-            ),
-        )
-        _create_snapshot(project, f"Confirmed {node.title}", "user_confirm")
+        _apply_node_confirm(project, workflow, run, node, reason="user_confirm")
         _runtime.start(project, run)
         return {"ok": True, "run": run, "workflow": workflow}
+
+    @router.post("/runs/{run_id}/nodes/{node_id}/return")
+    async def return_node(run_id: str, node_id: str, body: NodeReturnRequest) -> Dict[str, Any]:
+        run = _load_run(run_id)
+        project = _load_project(run.projectId)
+        workflow = _load_workflow(project)
+        node = _node_by_id(workflow, node_id)
+        if node.status not in {"waiting_user_confirm", "reviewing"}:
+            raise HTTPException(status_code=409, detail="Node is not waiting for return selection")
+        decision = _apply_node_return(project, workflow, run, node, body.targetNodeId, body.reason or "User requested revision")
+        _runtime.start(project, run)
+        return {"ok": True, "run": run, "workflow": workflow, "decision": decision.model_dump()}
 
     @router.post("/runs/{run_id}/nodes/{node_id}/retry")
     async def retry_node(run_id: str, node_id: str) -> Dict[str, Any]:
@@ -1305,6 +1308,88 @@ def _execute_node(project: WorkflowProject, workflow: Workflow, run: ExecutionRu
             durationMs=int((time.time() - started) * 1000),
         ),
     )
+
+    if _node_requires_review_decision(workflow, node):
+        review_decision = _review_decision_from_text(final_text, workflow, node)
+        node.outputs["reviewDecision"] = review_decision.model_dump()
+        _append_event(
+            project.id,
+            StreamEvent(
+                id=_new_id("evt"),
+                projectId=project.id,
+                runId=run.id,
+                nodeId=node.id,
+                type="stage_result",
+                label="审查决策",
+                summary=_review_decision_summary(workflow, node, review_decision),
+                details={"reviewDecision": review_decision.model_dump()},
+                status="success" if review_decision.decision == "pass" else "warning",
+            ),
+        )
+
+        if run.mode == "auto":
+            if review_decision.decision == "pass":
+                _apply_node_confirm(project, workflow, run, node, reason="auto_review_pass", decision=review_decision)
+                _append_node_status(project, run, node, "自动审查通过", "结构化审查结果为 pass，调度器继续推进下游。", status="success")
+                return
+            if review_decision.decision == "return" and review_decision.targetNodeId:
+                try:
+                    _apply_node_return(project, workflow, run, node, review_decision.targetNodeId, review_decision.reason or "Auto review requested revision")
+                except HTTPException:
+                    return
+                return
+
+            node.status = "waiting_user_confirm"
+            run.status = "waiting_user_confirm"
+            run.currentNodeId = node.id
+            run.updatedAt = time.time()
+            _save_workflow(project, workflow)
+            _save_run(run)
+            _append_event(
+                project.id,
+                StreamEvent(
+                    id=_new_id("evt"),
+                    projectId=project.id,
+                    runId=run.id,
+                    nodeId=node.id,
+                    type="approval",
+                    label="等待用户确认",
+                    summary=f"「{node.title}」未返回可自动执行的审查决策，请人工选择 Confirm 或 Return。",
+                    details={"reviewDecision": review_decision.model_dump(), "mode": run.mode},
+                    status="warning",
+                ),
+            )
+            _create_snapshot(project, f"Review needs user decision {node.title}", "review_user_decision")
+            return
+
+        feedback_targets = [_node_by_id(workflow, edge.target).model_dump() for edge in _feedback_edges(workflow, node.id)]
+        node.status = "waiting_user_confirm"
+        _save_workflow(project, workflow)
+        _append_event(
+            project.id,
+            StreamEvent(
+                id=_new_id("evt"),
+                projectId=project.id,
+                runId=run.id,
+                nodeId=node.id,
+                type="approval",
+                label="等待用户确认",
+                summary=(
+                    f"「{node.title}」需要确认通过，或沿 feedback edge 返回返工。"
+                    if feedback_targets
+                    else f"「{node.title}」需要确认后才能推进下游节点。"
+                ),
+                details={
+                    "reviewRules": node.reviewRules.model_dump(),
+                    "mode": run.mode,
+                    "reviewDecision": review_decision.model_dump(),
+                    "feedbackTargets": feedback_targets,
+                },
+                status="warning",
+            ),
+        )
+        _create_snapshot(project, f"Review waiting {node.title}", "review_wait")
+        return
 
     if _node_needs_confirmation(run, node):
         node.status = "waiting_user_confirm"
@@ -1979,6 +2064,7 @@ def _workflow_generation_prompt(project: WorkflowProject) -> str:
             "The workflow must be executable by independent Hermes Agent node runs.",
             "Include planning, reference/context handling when useful, execution, review, and final delivery nodes.",
             "Use dependency edges for forward execution. Use type='feedback' only for bounded revision loops.",
+            "Feedback edges must go from review nodes back to earlier planning/reference/execution nodes that can be reworked.",
             "At least one start node must have no dependencies. Include no ordinary dependency cycles.",
             "",
             f"Project name: {project.name}",
@@ -2225,6 +2311,255 @@ def _workflow_is_done(workflow: Workflow) -> bool:
     return bool(required) and all(node.status in terminal for node in required)
 
 
+def _feedback_edges(workflow: Workflow, node_id: str) -> List[WorkflowEdge]:
+    return [edge for edge in workflow.edges if edge.source == node_id and edge.type == "feedback"]
+
+
+def _feedback_target_ids(workflow: Workflow, node_id: str) -> set[str]:
+    return {edge.target for edge in _feedback_edges(workflow, node_id)}
+
+
+def _node_requires_review_decision(workflow: Workflow, node: WorkflowNode) -> bool:
+    return node.type == "review" or bool(_feedback_edges(workflow, node.id))
+
+
+def _dependency_successors(workflow: Workflow, node_id: str) -> List[str]:
+    return [edge.target for edge in workflow.edges if edge.source == node_id and edge.type != "feedback"]
+
+
+def _dependency_predecessors(workflow: Workflow, node_id: str) -> List[str]:
+    return [edge.source for edge in workflow.edges if edge.target == node_id and edge.type != "feedback"]
+
+
+def _dependency_descendants(workflow: Workflow, start_id: str) -> set[str]:
+    seen: set[str] = set()
+    stack = [start_id]
+    while stack:
+        current = stack.pop()
+        for child in _dependency_successors(workflow, current):
+            if child not in seen:
+                seen.add(child)
+                stack.append(child)
+    return seen
+
+
+def _dependency_ancestors(workflow: Workflow, start_id: str) -> set[str]:
+    seen: set[str] = set()
+    stack = [start_id]
+    while stack:
+        current = stack.pop()
+        for parent in _dependency_predecessors(workflow, current):
+            if parent not in seen:
+                seen.add(parent)
+                stack.append(parent)
+    return seen
+
+
+def _reset_node_for_revision(node: WorkflowNode) -> None:
+    node.outputs.pop("completedAt", None)
+    node.outputs.pop("confirmedAt", None)
+    node.outputs.pop("skippedAt", None)
+    node.outputs.pop("failedAt", None)
+
+
+def _apply_node_confirm(
+    project: WorkflowProject,
+    workflow: Workflow,
+    run: ExecutionRun,
+    node: WorkflowNode,
+    *,
+    reason: str,
+    decision: Optional[ReviewDecision] = None,
+) -> None:
+    node.status = "completed"
+    node.outputs["confirmedAt"] = time.time()
+    if decision:
+        node.outputs["reviewDecision"] = decision.model_dump()
+    _promote_ready_nodes(workflow)
+    _save_workflow(project, workflow)
+    run.status = "running"
+    run.updatedAt = time.time()
+    _save_run(run)
+    _append_event(
+        project.id,
+        StreamEvent(
+            id=_new_id("evt"),
+            projectId=project.id,
+            runId=run.id,
+            nodeId=node.id,
+            type="approval",
+            label="节点已确认",
+            summary=f"已确认「{node.title}」，调度器继续推进下游节点。",
+            details={"reason": reason, "reviewDecision": decision.model_dump() if decision else None},
+            status="success",
+        ),
+    )
+    _create_snapshot(project, f"Confirmed {node.title}", "user_confirm")
+
+
+def _apply_node_return(
+    project: WorkflowProject,
+    workflow: Workflow,
+    run: ExecutionRun,
+    node: WorkflowNode,
+    target_node_id: str,
+    reason: str,
+) -> ReviewDecision:
+    target_id = str(target_node_id or "").strip()
+    allowed_targets = _feedback_target_ids(workflow, node.id)
+    if target_id not in allowed_targets:
+        raise HTTPException(status_code=422, detail="Return target must be connected by a feedback edge")
+
+    target = _node_by_id(workflow, target_id)
+    decision = ReviewDecision(decision="return", targetNodeId=target.id, reason=_truncate_text(reason or "Revision requested", 1200))
+    if target.retryCount >= target.maxRetries:
+        node.status = "waiting_user_confirm"
+        node.outputs["reviewDecision"] = ReviewDecision(
+            decision="needs_human",
+            targetNodeId=target.id,
+            reason=f"Feedback target retry limit reached: {target.retryCount}/{target.maxRetries}",
+        ).model_dump()
+        run.status = "waiting_user_confirm"
+        run.currentNodeId = node.id
+        run.updatedAt = time.time()
+        _save_workflow(project, workflow)
+        _save_run(run)
+        _append_event(
+            project.id,
+            StreamEvent(
+                id=_new_id("evt"),
+                projectId=project.id,
+                runId=run.id,
+                nodeId=node.id,
+                type="error",
+                label="返工次数已耗尽",
+                summary=f"「{target.title}」已达到最大返工次数 {target.maxRetries}，需要人工处理。",
+                details={"targetNodeId": target.id, "retryCount": target.retryCount, "maxRetries": target.maxRetries},
+                status="error",
+            ),
+        )
+        _append_event(
+            project.id,
+            StreamEvent(
+                id=_new_id("evt"),
+                projectId=project.id,
+                runId=run.id,
+                nodeId=node.id,
+                type="approval",
+                label="等待用户处理",
+                summary=f"无法自动返回「{target.title}」，请人工确认、重试或跳过。",
+                details={"targetNodeId": target.id},
+                status="warning",
+            ),
+        )
+        raise HTTPException(status_code=409, detail="Feedback target retry limit reached")
+
+    descendants = _dependency_descendants(workflow, target.id)
+    ancestors = _dependency_ancestors(workflow, node.id)
+    reset_ids = {target.id, node.id, *(descendants & ancestors)}
+    reset_node_ids: List[str] = []
+    for candidate in workflow.nodes:
+        if candidate.id not in reset_ids:
+            continue
+        _reset_node_for_revision(candidate)
+        reset_node_ids.append(candidate.id)
+        if candidate.id == target.id:
+            candidate.status = "ready"
+            candidate.retryCount += 1
+        elif candidate.id == node.id:
+            candidate.status = "revision_needed"
+        elif candidate.status in {"completed", "waiting_user_confirm", "reviewing", "ready", "created", "revision_needed", "skipped", "failed"}:
+            candidate.status = "revision_needed"
+
+    node.outputs.update(
+        {
+            "reviewDecision": decision.model_dump(),
+            "returnedAt": time.time(),
+            "returnTargetId": target.id,
+            "returnReason": decision.reason,
+        }
+    )
+    run.status = "running"
+    run.currentNodeId = target.id
+    run.updatedAt = time.time()
+    _save_workflow(project, workflow)
+    _save_run(run)
+    _append_event(
+        project.id,
+        StreamEvent(
+            id=_new_id("evt"),
+            projectId=project.id,
+            runId=run.id,
+            nodeId=node.id,
+            type="stage_result",
+            label="审查要求返工",
+            summary=f"「{node.title}」未通过审查，返回「{target.title}」继续修订。",
+            details={"reviewDecision": decision.model_dump(), "resetNodeIds": reset_node_ids},
+            status="warning",
+        ),
+    )
+    _append_node_status(project, run, node, "节点需要返工", f"已沿 feedback edge 返回「{target.title}」。", status="warning")
+    _append_node_status(project, run, target, "返工目标已就绪", f"「{target.title}」已重新加入 ready queue。", status="warning")
+    _create_snapshot(project, f"Returned {node.title} to {target.title}", "review_return")
+    return decision
+
+
+def _review_decision_from_text(text: str, workflow: Workflow, node: WorkflowNode) -> ReviewDecision:
+    allowed_targets = _feedback_target_ids(workflow, node.id)
+    data: Optional[Dict[str, Any]] = None
+    stripped = _strip_reasoning(text)
+    tagged = re.search(
+        r"<workflow_review_decision>\s*(\{.*?\})\s*</workflow_review_decision>",
+        stripped,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    candidates = [tagged.group(1)] if tagged else []
+    candidates.extend(match.group(1) for match in re.finditer(r"```(?:json)?\s*(\{.*?\"decision\".*?\})\s*```", stripped, flags=re.DOTALL | re.IGNORECASE))
+    if '"decision"' in stripped:
+        candidates.append(stripped)
+
+    for candidate in candidates:
+        try:
+            data = _extract_json_object(candidate)
+            break
+        except Exception:
+            continue
+
+    if not isinstance(data, dict):
+        return ReviewDecision(decision="needs_human", reason="No structured review decision was returned.")
+
+    decision = str(data.get("decision") or "").strip().lower()
+    target = data.get("targetNodeId") or data.get("target") or data.get("returnTargetId")
+    target_id = str(target).strip() if target else None
+    reason = _truncate_text(str(data.get("reason") or data.get("summary") or ""), 1200)
+
+    if decision in {"pass", "passed", "approve", "approved", "confirm"}:
+        return ReviewDecision(decision="pass", reason=reason or "Review passed.")
+    if decision in {"return", "revise", "revision", "fail", "failed", "rework"}:
+        if not target_id and len(allowed_targets) == 1:
+            target_id = next(iter(allowed_targets))
+        if target_id not in allowed_targets:
+            return ReviewDecision(
+                decision="needs_human",
+                targetNodeId=target_id,
+                reason=reason or "Return decision did not reference a valid feedback target.",
+            )
+        return ReviewDecision(decision="return", targetNodeId=target_id, reason=reason or "Review requested revision.")
+    return ReviewDecision(decision="needs_human", targetNodeId=target_id, reason=reason or "Review decision was not pass or return.")
+
+
+def _review_decision_summary(workflow: Workflow, node: WorkflowNode, decision: ReviewDecision) -> str:
+    if decision.decision == "pass":
+        return f"「{node.title}」审查决策为通过。{decision.reason}".strip()
+    if decision.decision == "return" and decision.targetNodeId:
+        try:
+            target = _node_by_id(workflow, decision.targetNodeId)
+            return f"「{node.title}」审查决策为返回「{target.title}」返工。{decision.reason}".strip()
+        except HTTPException:
+            return f"「{node.title}」审查决策为返回返工，但目标节点不可用。{decision.reason}".strip()
+    return f"「{node.title}」需要人工选择审查结果。{decision.reason}".strip()
+
+
 def _node_needs_confirmation(run: ExecutionRun, node: WorkflowNode) -> bool:
     if run.mode == "auto":
         return False
@@ -2370,6 +2705,16 @@ def _node_execution_prompt(project: WorkflowProject, workflow: Workflow, run: Ex
     enabled_refs = [ref.model_dump() for ref in _load_references(project) if ref.enabled]
     selected_refs = _node_reference_details(project, node)
     enabled_skills = _effective_node_skills(project, node)
+    feedback_targets = [
+        {
+            "edgeId": edge.id,
+            "targetNodeId": edge.target,
+            "targetTitle": _node_by_id(workflow, edge.target).title,
+            "targetType": _node_by_id(workflow, edge.target).type,
+            "label": edge.label,
+        }
+        for edge in _feedback_edges(workflow, node.id)
+    ]
     parent_outputs = [
         {
             "id": parent.id,
@@ -2397,12 +2742,20 @@ def _node_execution_prompt(project: WorkflowProject, workflow: Workflow, run: Ex
             f"Node selected references JSON:\n{json.dumps(selected_refs, ensure_ascii=False, indent=2)}",
             f"Enabled skills JSON:\n{json.dumps(enabled_skills, ensure_ascii=False, indent=2)}",
             f"Effective model override: {node.modelOverride or node.model or 'global/default'}",
+            f"Feedback return targets JSON:\n{json.dumps(feedback_targets, ensure_ascii=False, indent=2)}",
             "",
             "Final response requirements:",
             "- State what was done for this node.",
             "- List produced/updated artifacts with paths.",
             "- List any blockers or user decisions needed.",
             "- Keep it concise and directly actionable.",
+            (
+                "- Review decision: because this node is a review/feedback gate, end the final answer with "
+                "<workflow_review_decision>{\"decision\":\"pass|return\",\"targetNodeId\":\"feedback-target-id-or-null\",\"reason\":\"brief visible reason\"}</workflow_review_decision>. "
+                "Use decision='pass' only when the acceptance criteria are satisfied. Use decision='return' only with one of the listed feedback target ids when revision is needed."
+                if _node_requires_review_decision(workflow, node)
+                else ""
+            ),
         ]
     )
 

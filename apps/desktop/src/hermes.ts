@@ -509,6 +509,18 @@ export function retryWorkflowNode(runId: string, nodeId: string): Promise<Workfl
   })
 }
 
+export function returnWorkflowNode(
+  runId: string,
+  nodeId: string,
+  payload: { reason?: string; targetNodeId: string }
+): Promise<WorkflowRunResponse> {
+  return window.hermesDesktop.api<WorkflowRunResponse>({
+    path: `/api/workflows/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/return`,
+    method: 'POST',
+    body: payload
+  })
+}
+
 export function skipWorkflowNode(runId: string, nodeId: string): Promise<WorkflowRunResponse> {
   return window.hermesDesktop.api<WorkflowRunResponse>({
     path: `/api/workflows/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/skip`,

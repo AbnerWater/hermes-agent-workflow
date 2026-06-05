@@ -36,6 +36,12 @@ export interface ReviewRules {
   checklist: string[]
 }
 
+export interface ReviewDecision {
+  decision: 'pass' | 'return' | 'needs_human'
+  targetNodeId?: string | null
+  reason?: string
+}
+
 export interface WorkflowNode {
   id: string
   type: string
