@@ -1,34 +1,115 @@
 <p align="center">
-  <img src="assets/banner.png" alt="Hermes Agent" width="100%">
+  <img src="assets/hermes-workflow-banner.png" alt="Hermes Workflow" width="100%">
 </p>
 
-# Hermes Agent ☤
+# Hermes Workflow
 
 <p align="center">
   <a href="https://hermes-agent.nousresearch.com/docs/"><img src="https://img.shields.io/badge/Docs-hermes--agent.nousresearch.com-FFD700?style=for-the-badge" alt="Documentation"></a>
   <a href="https://discord.gg/NousResearch"><img src="https://img.shields.io/badge/Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord"></a>
   <a href="https://github.com/NousResearch/hermes-agent/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="License: MIT"></a>
   <a href="https://nousresearch.com"><img src="https://img.shields.io/badge/Built%20by-Nous%20Research-blueviolet?style=for-the-badge" alt="Built by Nous Research"></a>
-  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-中文-red?style=for-the-badge" alt="中文"></a>
+  <a href="README.zh-CN.md"><img src="https://img.shields.io/badge/Lang-%E4%B8%AD%E6%96%87-red?style=for-the-badge" alt="Chinese"></a>
 </p>
 
-**The self-improving AI agent built by [Nous Research](https://nousresearch.com).** It's the only agent with a built-in learning loop — it creates skills from experience, improves them during use, nudges itself to persist knowledge, searches its own past conversations, and builds a deepening model of who you are across sessions. Run it on a $5 VPS, a GPU cluster, or serverless infrastructure that costs nearly nothing when idle. It's not tied to your laptop — talk to it from Telegram while it works on a cloud VM.
+Hermes Workflow is a workflow-first AI agent workbench derived from Hermes Agent. It keeps the Hermes Agent runtime, models, tools, and skills as the execution foundation, then adds a project-oriented Workflow Workbench app for planning, visualizing, running, reviewing, and preserving multi-step AI work.
 
-Use any model you want — [Nous Portal](https://portal.nousresearch.com), [OpenRouter](https://openrouter.ai) (200+ models), [NovitaAI](https://novita.ai) (AI-native cloud for Model API, Agent Sandbox, and GPU Cloud), [NVIDIA NIM](https://build.nvidia.com) (Nemotron), [Xiaomi MiMo](https://platform.xiaomimimo.com), [z.ai/GLM](https://z.ai), [Kimi/Moonshot](https://platform.moonshot.ai), [MiniMax](https://www.minimax.io), [Hugging Face](https://huggingface.co), OpenAI, or your own endpoint. Switch with `hermes model` — no code changes, no lock-in.
+Instead of treating every job as one long chat, Hermes Workflow turns a goal into a project: clarify the requirements, generate an executable node graph, bind references and skills to each node, run nodes with visible state, review file changes and artifacts, and checkpoint the project as it evolves.
 
-<table>
-<tr><td><b>A real terminal interface</b></td><td>Full TUI with multiline editing, slash-command autocomplete, conversation history, interrupt-and-redirect, and streaming tool output.</td></tr>
-<tr><td><b>Lives where you do</b></td><td>Telegram, Discord, Slack, WhatsApp, Signal, and CLI — all from a single gateway process. Voice memo transcription, cross-platform conversation continuity.</td></tr>
-<tr><td><b>A closed learning loop</b></td><td>Agent-curated memory with periodic nudges. Autonomous skill creation after complex tasks. Skills self-improve during use. FTS5 session search with LLM summarization for cross-session recall. <a href="https://github.com/plastic-labs/honcho">Honcho</a> dialectic user modeling. Compatible with the <a href="https://agentskills.io">agentskills.io</a> open standard.</td></tr>
-<tr><td><b>Scheduled automations</b></td><td>Built-in cron scheduler with delivery to any platform. Daily reports, nightly backups, weekly audits — all in natural language, running unattended.</td></tr>
-<tr><td><b>Delegates and parallelizes</b></td><td>Spawn isolated subagents for parallel workstreams. Write Python scripts that call tools via RPC, collapsing multi-step pipelines into zero-context-cost turns.</td></tr>
-<tr><td><b>Runs anywhere, not just your laptop</b></td><td>Six terminal backends — local, Docker, SSH, Singularity, Modal, and Daytona. Daytona and Modal offer serverless persistence — your agent's environment hibernates when idle and wakes on demand, costing nearly nothing between sessions. Run it on a $5 VPS or a GPU cluster.</td></tr>
-<tr><td><b>Research-ready</b></td><td>Batch trajectory generation, trajectory compression for training the next generation of tool-calling models.</td></tr>
-</table>
+## What is Hermes Workflow?
 
----
+Hermes Workflow is built for work that needs structure, auditability, and human control:
 
-## Quick Install
+- **Project-first interaction**: every workflow has a project root, goal, references, generated plan, run history, artifacts, and snapshots.
+- **Visual agent orchestration**: the desktop workbench shows the workflow as a node graph with dependencies, success paths, and failure/return paths.
+- **Hermes Agent execution**: each node can run through the underlying Hermes Agent runtime while inheriting configured providers, models, tools, and skills.
+- **Reviewable outputs**: node results are written as Markdown artifacts, file changes are summarized for review, and stream events preserve what happened during execution.
+- **Recoverable progress**: workflow metadata is stored in readable project files plus a local event database, with Git snapshots created around important milestones.
+
+## What can Hermes Workflow do?
+
+| Capability | What it means in practice |
+| --- | --- |
+| Goal intake and clarification | Start with a project name, goal, optional root, and references. Hermes asks planning questions before generating the workflow. |
+| Generated node graph | The workbench creates editable planning, reference, execution, review, and delivery nodes with dependency edges. |
+| References | Add project-level and node-level files or folders so enabled materials enter the right execution context. |
+| Skill bindings | Let Hermes choose skills automatically or bind selected skills manually for a node. |
+| Node prompt and model control | Inspect and edit each node's execution prompt, and optionally override the model for that node. |
+| Execution control | Run the workflow in `single_step`, `semi_auto`, or `auto` mode with pause, resume, stop, retry, skip, pass, fail, and return controls. |
+| Review gates | Require human confirmation for selected nodes, route failures through feedback edges, or allow structured automatic review decisions in auto mode. |
+| Stream output | Watch process summaries, tool calls, stage results, AI replies, node status changes, approvals, errors, and snapshots as live events. |
+| Artifact and file review | Review node Markdown artifacts and inspect new, modified, deleted, or binary business files after node execution. |
+| Snapshots and export | Create Git-backed project snapshots and export a workflow project as a portable zip without heavy runtime files. |
+
+## Workflow Workbench App
+
+The desktop app is the primary Hermes Workflow surface. Open **Workflow Workbench** from the sidebar or navigate to `/workflows` in the desktop shell.
+
+The app is organized around these UI regions:
+
+- **Project sidebar**: browse workflow projects, create new workflows, reopen project roots, rename, archive, remove from history, or export.
+- **New Workflow intake**: enter the task background, choose a project directory, add references, answer clarification questions, then confirm generation.
+- **Canvas**: inspect and edit the workflow graph, move nodes, connect success/failure ports, and follow the currently running node.
+- **Execution toolbar**: choose `single_step`, `semi_auto`, or `auto`, then run, pause, resume, or stop the current workflow.
+- **Node detail drawer**: inspect node status, prompt, model, skills, references, review rules, review decisions, artifacts, and file changes.
+- **References and skills drawers**: manage the project context and skill availability without leaving the workbench.
+- **Snapshots drawer**: create manual snapshots and inspect previous workflow checkpoints.
+- **Project file tree**: browse workflow project files such as references, workflow metadata, artifacts, outputs, and logs.
+- **Stream output**: follow live execution events and AI replies in a dedicated stream panel rather than scattered chat bubbles.
+- **Workflow composer**: send project-level or node-level instructions, slash commands, and file attachments back into the workflow.
+
+### UI showcase placeholders
+
+The README intentionally uses non-rendering placeholders until real product screenshots are committed.
+
+| Slot | Intended future asset | Alt text / caption |
+| --- | --- | --- |
+| Workbench overview | `docs/assets/workflow-workbench-overview.png` | Hermes Workflow Workbench showing the project sidebar, workflow canvas, node drawer, and stream output. |
+| Intake and clarification | `docs/assets/workflow-intake-clarification.png` | New Workflow intake screen with project configuration, clarification questions, and planning summary. |
+| Canvas execution | `docs/assets/workflow-canvas-execution.png` | Workflow graph running in semi-auto mode with the current node highlighted. |
+| Node review drawer | `docs/assets/workflow-node-review-drawer.png` | Node detail drawer showing review controls, artifacts, file changes, references, and skills. |
+| Stream and artifacts | `docs/assets/workflow-stream-artifacts.png` | Stream output panel with tool calls, AI replies, stage results, snapshots, and generated artifacts. |
+
+See the desktop-specific README for more details: [apps/desktop/README.md](apps/desktop/README.md).
+
+## Workflow execution modes
+
+Hermes Workflow currently exposes three run modes:
+
+- `single_step`: execute one node and wait for user confirmation before continuing.
+- `semi_auto`: continue through ordinary nodes, but pause at review gates or nodes that require confirmation.
+- `auto`: let the workflow engine continue automatically and apply structured review decisions when possible.
+
+All modes preserve explicit user controls for pause, resume, stop, retry, skip, pass, fail, and return. Review and failure paths are first-class workflow edges, so a failed review can send work back to an earlier node instead of ending the run.
+
+## Project files and persistence
+
+When no custom root is chosen, projects are created under:
+
+```text
+HERMES_HOME/workflows/<project-slug>
+```
+
+Each workflow project keeps its state under `.agent-workflow/`:
+
+```text
+.agent-workflow/
+  project.json
+  workflow.flow.json
+  references.manifest.json
+  skills.config.json
+  settings.json
+  artifacts.manifest.json
+  workflow.db
+  intake.state.json
+  stream-events/YYYY-MM-DD.jsonl
+```
+
+Generated work is stored in project directories such as `artifacts/`, `outputs/`, `logs/`, `references/`, and `workflow/`. Git snapshots are created after project initialization, workflow generation, workflow edits, node completion, review transitions, and final delivery when Git is available.
+
+## Install / Run
+
+Hermes Workflow still uses the existing Hermes install and command names while the workflow-first app is developed.
 
 ### Linux, macOS, WSL2, Termux
 
@@ -36,181 +117,65 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 ```
 
-### Windows (native, PowerShell)
-
-> **Heads up:** Native Windows runs Hermes without WSL — CLI, gateway, TUI, and tools all work natively. If you'd rather use WSL2, the Linux/macOS one-liner above works there too. Found a bug? Please [file issues](https://github.com/NousResearch/hermes-agent/issues).
-
-Run this in PowerShell:
+### Windows PowerShell
 
 ```powershell
 iex (irm https://hermes-agent.nousresearch.com/install.ps1)
 ```
 
-The installer handles everything: uv, Python 3.11, Node.js, ripgrep, ffmpeg, **and a portable Git Bash** (MinGit, unpacked to `%LOCALAPPDATA%\hermes\git` — no admin required, completely isolated from any system Git install). Hermes uses this bundled Git Bash to run shell commands.
-
-If you already have Git installed, the installer detects it and uses that instead. Otherwise a ~45MB MinGit download is all you need — it won't touch or interfere with any system Git.
-
-> **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
->
-> **Windows:** Native Windows is fully supported — the PowerShell one-liner above installs everything. If you'd rather use WSL2, the Linux command works there too. Native Windows install lives under `%LOCALAPPDATA%\hermes`; WSL2 installs under `~/.hermes` as on Linux. The only Hermes feature that currently needs WSL2 specifically is the browser-based dashboard chat pane (it uses a POSIX PTY — classic CLI and gateway both run natively).
-
 After installation:
 
 ```bash
-source ~/.bashrc    # reload shell (or: source ~/.zshrc)
-hermes              # start chatting!
+hermes setup
+hermes model
+hermes desktop
 ```
 
----
-
-## Getting Started
+The desktop app can also be installed with the agent in one step:
 
 ```bash
-hermes              # Interactive CLI — start a conversation
-hermes model        # Choose your LLM provider and model
-hermes tools        # Configure which tools are enabled
-hermes config set   # Set individual config values
-hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
-hermes setup        # Run the full setup wizard (configures everything at once)
-hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
-hermes update       # Update to the latest version
-hermes doctor       # Diagnose any issues
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --include-desktop
 ```
 
-📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
+## Development
 
----
-
-## Skip the API-key collection — Nous Portal
-
-Hermes works with whatever provider you want — that's not changing. But if you'd rather not collect five separate API keys for the model, web search, image generation, TTS, and a cloud browser, **[Nous Portal](https://portal.nousresearch.com)** covers all of them under one subscription:
-
-- **300+ models** — pick any of them with `/model <name>`
-- **Tool Gateway** — web search (Firecrawl), image generation (FAL), text-to-speech (OpenAI), cloud browser (Browser Use), all routed through your sub. No extra accounts.
-
-One command from a fresh install:
-
-```bash
-hermes setup --portal
-```
-
-That logs you in via OAuth, sets Nous as your provider, and turns on the Tool Gateway. Check what's wired up any time with `hermes portal info`. Full details on the [Tool Gateway docs page](https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-gateway).
-
-You can still bring your own keys per-tool whenever you want — the gateway is per-backend, not all-or-nothing.
-
----
-
-## CLI vs Messaging Quick Reference
-
-Hermes has two entry points: start the terminal UI with `hermes`, or run the gateway and talk to it from Telegram, Discord, Slack, WhatsApp, Signal, or Email. Once you're in a conversation, many slash commands are shared across both interfaces.
-
-| Action                         | CLI                                           | Messaging platforms                                                              |
-| ------------------------------ | --------------------------------------------- | -------------------------------------------------------------------------------- |
-| Start chatting                 | `hermes`                                      | Run `hermes gateway setup` + `hermes gateway start`, then send the bot a message |
-| Start fresh conversation       | `/new` or `/reset`                            | `/new` or `/reset`                                                               |
-| Change model                   | `/model [provider:model]`                     | `/model [provider:model]`                                                        |
-| Set a personality              | `/personality [name]`                         | `/personality [name]`                                                            |
-| Retry or undo the last turn    | `/retry`, `/undo`                             | `/retry`, `/undo`                                                                |
-| Compress context / check usage | `/compress`, `/usage`, `/insights [--days N]` | `/compress`, `/usage`, `/insights [days]`                                        |
-| Browse skills                  | `/skills` or `/<skill-name>`                  | `/<skill-name>`                                                                  |
-| Interrupt current work         | `Ctrl+C` or send a new message                | `/stop` or send a new message                                                    |
-| Platform-specific status       | `/platforms`                                  | `/status`, `/sethome`                                                            |
-
-For the full command lists, see the [CLI guide](https://hermes-agent.nousresearch.com/docs/user-guide/cli) and the [Messaging Gateway guide](https://hermes-agent.nousresearch.com/docs/user-guide/messaging).
-
----
-
-## Documentation
-
-All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes-agent.nousresearch.com/docs/)**:
-
-| Section                                                                                             | What's Covered                                             |
-| --------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| [Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart)                 | Install → setup → first conversation in 2 minutes          |
-| [CLI Usage](https://hermes-agent.nousresearch.com/docs/user-guide/cli)                              | Commands, keybindings, personalities, sessions             |
-| [Configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration)                | Config file, providers, models, all options                |
-| [Messaging Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging)                | Telegram, Discord, Slack, WhatsApp, Signal, Home Assistant |
-| [Security](https://hermes-agent.nousresearch.com/docs/user-guide/security)                          | Command approval, DM pairing, container isolation          |
-| [Tools & Toolsets](https://hermes-agent.nousresearch.com/docs/user-guide/features/tools)            | 40+ tools, toolset system, terminal backends               |
-| [Skills System](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills)              | Procedural memory, Skills Hub, creating skills             |
-| [Memory](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory)                     | Persistent memory, user profiles, best practices           |
-| [MCP Integration](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp)               | Connect any MCP server for extended capabilities           |
-| [Cron Scheduling](https://hermes-agent.nousresearch.com/docs/user-guide/features/cron)              | Scheduled tasks with platform delivery                     |
-| [Context Files](https://hermes-agent.nousresearch.com/docs/user-guide/features/context-files)       | Project context that shapes every conversation             |
-| [Architecture](https://hermes-agent.nousresearch.com/docs/developer-guide/architecture)             | Project structure, agent loop, key classes                 |
-| [Contributing](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing)             | Development setup, PR process, code style                  |
-| [CLI Reference](https://hermes-agent.nousresearch.com/docs/reference/cli-commands)                  | All commands and flags                                     |
-| [Environment Variables](https://hermes-agent.nousresearch.com/docs/reference/environment-variables) | Complete env var reference                                 |
-
----
-
-## Migrating from OpenClaw
-
-If you're coming from OpenClaw, Hermes can automatically import your settings, memories, skills, and API keys.
-
-**During first-time setup:** The setup wizard (`hermes setup`) automatically detects `~/.openclaw` and offers to migrate before configuration begins.
-
-**Anytime after install:**
-
-```bash
-hermes claw migrate              # Interactive migration (full preset)
-hermes claw migrate --dry-run    # Preview what would be migrated
-hermes claw migrate --preset user-data   # Migrate without secrets
-hermes claw migrate --overwrite  # Overwrite existing conflicts
-```
-
-What gets imported:
-
-- **SOUL.md** — persona file
-- **Memories** — MEMORY.md and USER.md entries
-- **Skills** — user-created skills → `~/.hermes/skills/openclaw-imports/`
-- **Command allowlist** — approval patterns
-- **Messaging settings** — platform configs, allowed users, working directory
-- **API keys** — allowlisted secrets (Telegram, OpenRouter, OpenAI, Anthropic, ElevenLabs)
-- **TTS assets** — workspace audio files
-- **Workspace instructions** — AGENTS.md (with `--workspace-target`)
-
-See `hermes claw migrate --help` for all options, or use the `openclaw-migration` skill for an interactive agent-guided migration with dry-run previews.
-
----
-
-## Contributing
-
-We welcome contributions! See the [Contributing Guide](https://hermes-agent.nousresearch.com/docs/developer-guide/contributing) for development setup, code style, and PR process.
-
-Quick start for contributors — clone and go with `setup-hermes.sh`:
-
-```bash
-git clone https://github.com/NousResearch/hermes-agent.git
-cd hermes-agent
-./setup-hermes.sh     # installs uv, creates venv, installs .[all], symlinks ~/.local/bin/hermes
-./hermes              # auto-detects the venv, no need to `source` first
-```
-
-Manual path (equivalent to the above):
+From the repository root:
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 uv venv .venv --python 3.11
 source .venv/bin/activate
 uv pip install -e ".[all,dev]"
-scripts/run_tests.sh
+npm install
 ```
 
----
+Run the desktop workbench:
 
-## Community
+```bash
+cd apps/desktop
+npm run dev
+```
 
-- 💬 [Discord](https://discord.gg/NousResearch)
-- 📚 [Skills Hub](https://agentskills.io)
-- 🐛 [Issues](https://github.com/NousResearch/hermes-agent/issues)
-- 🔌 [computer-use-linux](https://github.com/avifenesh/computer-use-linux) — Linux desktop-control MCP server for Hermes and other MCP hosts, with AT-SPI accessibility trees, Wayland/X11 input, screenshots, and compositor window targeting.
-- 🔌 [HermesClaw](https://github.com/AaronWong1999/hermesclaw) — Community WeChat bridge: Run Hermes Agent and OpenClaw on the same WeChat account.
+Useful checks:
 
----
+```bash
+scripts/run_tests.sh
+cd apps/desktop
+npm run type-check
+npm run lint
+npm run test:desktop:all
+```
+
+For a disposable workflow home during development:
+
+```bash
+HERMES_HOME=/tmp/hermes-workflow-dev npm run dev
+```
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
 
-Built by [Nous Research](https://nousresearch.com).
+Hermes Workflow Workbench Built by [AbnerWater](https://github.com/AbnerWater).
+
+Hermes Agent Built by [Nous Research](https://nousresearch.com).
