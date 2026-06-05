@@ -366,7 +366,8 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     activates is ``target`` if given, otherwise ``name`` — this lets a custom
     alias name point at a differently-named profile without a post-hoc rewrite.
 
-    On Windows, creates a ``.bat`` file instead of a POSIX shell script.
+    On Windows, creates a ``.bat`` file and an extensionless POSIX shim for
+    shell environments that can execute scripts without PATHEXT.
     Returns the path to the created wrapper, or None if creation failed.
     """
     canon = normalize_profile_name(name)
@@ -381,8 +382,10 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     is_windows = sys.platform == "win32"
     if is_windows:
         wrapper_path = wrapper_dir / f"{canon}.bat"
+        shim_path = wrapper_dir / canon
         try:
             wrapper_path.write_text(f"@echo off\r\nhermes -p {profile} %*\r\n")
+            shim_path.write_text(f'#!/bin/sh\nexec hermes -p {profile} "$@"\n')
             return wrapper_path
         except OSError as e:
             print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")

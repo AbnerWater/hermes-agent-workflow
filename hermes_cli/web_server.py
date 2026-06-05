@@ -1884,11 +1884,16 @@ async def search_sessions(q: str = "", limit: int = 20):
             # Over-fetch so lineage dedup can still surface `limit` distinct
             # conversations even when several hits collapse onto one root.
             fetch_limit = max(safe_limit * 5, 50)
-            matches = db.search_messages(
-                query=prefix_query,
-                limit=fetch_limit,
-                exclude_sources=_HIDDEN_SESSION_SOURCES,
-            )
+            try:
+                matches = db.search_messages(
+                    query=prefix_query,
+                    limit=fetch_limit,
+                    exclude_sources=_HIDDEN_SESSION_SOURCES,
+                )
+            except TypeError as exc:
+                if "exclude_sources" not in str(exc):
+                    raise
+                matches = db.search_messages(query=prefix_query, limit=fetch_limit)
 
             for m in matches:
                 if len(seen) >= safe_limit:
