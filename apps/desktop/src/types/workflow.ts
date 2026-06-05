@@ -85,6 +85,8 @@ export interface WorkflowEdge {
   type: string
   label: string
   optional: boolean
+  sourceHandle?: 'success' | 'failure' | null
+  targetHandle?: 'input' | null
 }
 
 export interface Workflow {

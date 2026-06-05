@@ -36,9 +36,9 @@ import {
   attachWorkflowComposerFiles,
   completeWorkflowComposer,
   confirmWorkflowIntake,
-  confirmWorkflowNode,
   createWorkflowSnapshot,
   executeWorkflowSlashCommand,
+  failWorkflowNode,
   generateWorkflow,
   getGlobalModelOptions,
   getSkills,
@@ -47,7 +47,7 @@ import {
   listWorkflowEvents,
   listWorkflowProjects,
   pauseWorkflowRun,
-  returnWorkflowNode,
+  passWorkflowNode,
   retryWorkflowNode,
   saveWorkflow,
   sendWorkflowChat,
@@ -96,6 +96,7 @@ import {
 type DrawerMode = 'files' | 'references' | 'skills' | 'snapshots' | 'task'
 
 interface WorkflowNodeData extends Record<string, unknown> {
+  decisionNode: boolean
   node: WorkflowNode
 }
 
@@ -128,6 +129,25 @@ function statusMeta(copy: WorkflowCopy, status: WorkflowNodeStatus): { label: st
   }
 }
 
+function edgeSourceHandle(edge: WorkflowEdge): 'failure' | 'success' {
+  if (edge.sourceHandle === 'failure' || edge.type === 'feedback') {
+    return 'failure'
+  }
+
+  return 'success'
+}
+
+function workflowNodeIsDecisionNode(workflow: Workflow | null, node: WorkflowNode): boolean {
+  const nodeType = String(node.type || '').trim().toLowerCase()
+  return (
+    nodeType === 'review' ||
+    nodeType === 'test' ||
+    nodeType === 'testing' ||
+    node.reviewRules.required ||
+    Boolean(workflow?.edges.some(edge => edge.source === node.id && edgeSourceHandle(edge) === 'failure'))
+  )
+}
+
 const EVENT_ICON: Record<StreamEvent['type'], string> = {
   ai_reply: 'sparkle',
   approval: 'pass',
@@ -157,12 +177,12 @@ const RIGHT_DRAWER_DEFAULT_WIDTH = 352
 function WorkflowNodeCard({ data, selected }: NodeProps<FlowNode>) {
   const copy = useWorkflowCopy()
   const status = statusMeta(copy, data.node.status)
-  const hasReview = data.node.reviewRules.required
+  const hasReview = data.decisionNode
   const nodeType = copy.nodeType[data.node.type as keyof typeof copy.nodeType] ?? data.node.type.toUpperCase()
 
   return (
     <div className={cn('workflow-node-card', selected && 'is-selected', `tone-${status.tone}`)}>
-      <Handle className="workflow-handle" position={Position.Left} type="target" />
+      <Handle className="workflow-handle workflow-handle--input" id="input" position={Position.Left} title="Input" type="target" />
       <div className="workflow-node-card__top">
         <span className="workflow-node-card__type">{nodeType}</span>
         <span className={cn('workflow-status-pill', `tone-${status.tone}`)}>{status.label}</span>
@@ -173,7 +193,16 @@ function WorkflowNodeCard({ data, selected }: NodeProps<FlowNode>) {
         <span>{data.node.skills.length ? data.node.skills.join(' / ') : 'no skill'}</span>
         {hasReview && <span>review gate</span>}
       </div>
-      <Handle className="workflow-handle" position={Position.Right} type="source" />
+      <Handle
+        className={cn('workflow-handle workflow-handle--success', !data.decisionNode && 'workflow-handle--single-output')}
+        id="success"
+        position={Position.Right}
+        title={copy.successOutput}
+        type="source"
+      />
+      {data.decisionNode && (
+        <Handle className="workflow-handle workflow-handle--failure" id="failure" position={Position.Right} title={copy.failureOutput} type="source" />
+      )}
     </div>
   )
 }
@@ -326,10 +355,6 @@ function WorkflowWorkbench() {
     }
   }, [activeProjectId])
 
-  useEffect(() => {
-    latestEventTimestampRef.current = streamEvents.at(-1)?.timestamp
-  }, [streamEvents])
-
   const bundle = bundleQuery.data ?? null
   const workflow = bundle?.workflow ?? null
 
@@ -344,6 +369,19 @@ function WorkflowWorkbench() {
     () => workflow?.nodes.find(node => node.id === runtimeNodeId) ?? null,
     [runtimeNodeId, workflow]
   )
+
+  useEffect(() => {
+    const latest = streamEvents.at(-1)
+    const previousTimestamp = latestEventTimestampRef.current
+
+    if (latest && previousTimestamp && latest.timestamp > previousTimestamp && workflowEventNeedsCue(latest)) {
+      playWorkflowCue()
+    }
+  }, [streamEvents])
+
+  useEffect(() => {
+    latestEventTimestampRef.current = streamEvents.at(-1)?.timestamp
+  }, [streamEvents])
 
   useEffect(() => {
     if (selectedNode && selectedNode.id !== selectedNodeId) {
@@ -447,22 +485,22 @@ function WorkflowWorkbench() {
       runId,
       targetNodeId
     }: {
-      action: 'confirm' | 'retry' | 'skip' | 'return'
+      action: 'fail' | 'pass' | 'retry' | 'skip'
       nodeId: string
       reason?: string
       runId: string
       targetNodeId?: string
     }) => {
-      if (action === 'confirm') {
-        return confirmWorkflowNode(runId, nodeId)
+      if (action === 'pass') {
+        return passWorkflowNode(runId, nodeId)
       }
 
-      if (action === 'return') {
+      if (action === 'fail') {
         if (!targetNodeId) {
-          throw new Error('Return target is required')
+          throw new Error('Failure target is required')
         }
 
-        return returnWorkflowNode(runId, nodeId, { reason, targetNodeId })
+        return failWorkflowNode(runId, nodeId, { reason, targetNodeId })
       }
 
       if (action === 'retry') {
@@ -544,12 +582,28 @@ function WorkflowWorkbench() {
         return
       }
 
+      const sourceHandle = connection.sourceHandle === 'failure' ? 'failure' : 'success'
+      const sourceNode = workflow.nodes.find(node => node.id === connection.source)
+      if (!sourceNode) {
+        return
+      }
+
+      if (sourceHandle === 'failure' && !workflowNodeIsDecisionNode(workflow, sourceNode)) {
+        return
+      }
+
+      if (workflow.edges.some(edge => edge.source === connection.source && edgeSourceHandle(edge) === sourceHandle)) {
+        return
+      }
+
       const edge: WorkflowEdge = {
         id: `edge-${connection.source}-${connection.target}-${Date.now()}`,
         source: connection.source,
         target: connection.target,
-        type: 'dependency',
-        label: copy.dependency,
+        type: sourceHandle === 'failure' ? 'feedback' : 'dependency',
+        sourceHandle,
+        targetHandle: 'input',
+        label: sourceHandle === 'failure' ? copy.failureOutput : copy.successOutput,
         optional: false
       }
 
@@ -558,7 +612,7 @@ function WorkflowWorkbench() {
         snapshotLabel: 'Canvas edge created'
       })
     },
-    [copy.dependency, saveWorkflowMutation, workflow]
+    [copy.failureOutput, copy.successOutput, saveWorkflowMutation, workflow]
   )
 
   const saveNodeConfig = useCallback(
@@ -1113,7 +1167,7 @@ function RightDrawer({
   onSaveNode: (node: WorkflowNode) => void
   onSelectFile: (path: string) => void
   onNodeAction: (
-    action: 'confirm' | 'retry' | 'skip' | 'return',
+    action: 'fail' | 'pass' | 'retry' | 'skip',
     nodeId: string,
     runId: string,
     payload?: { reason?: string; targetNodeId?: string }
@@ -1212,7 +1266,7 @@ function TaskDetailDrawer({
   modelOptions: ModelOptionsResponse | null
   node: WorkflowNode | null
   onNodeAction: (
-    action: 'confirm' | 'retry' | 'skip' | 'return',
+    action: 'fail' | 'pass' | 'retry' | 'skip',
     nodeId: string,
     runId: string,
     payload?: { reason?: string; targetNodeId?: string }
@@ -1232,13 +1286,13 @@ function TaskDetailDrawer({
   const [promptEditing, setPromptEditing] = useState(false)
   const [promptDraft, setPromptDraft] = useState('')
   const [returnTargetId, setReturnTargetId] = useState('')
-  const feedbackTargets = useMemo(() => {
+  const failureTargets = useMemo(() => {
     if (!workflow || !node) {
       return []
     }
 
     return workflow.edges
-      .filter(edge => edge.type === 'feedback' && edge.source === node.id)
+      .filter(edge => edge.source === node.id && edgeSourceHandle(edge) === 'failure')
       .map(edge => ({
         edge,
         node: workflow.nodes.find(candidate => candidate.id === edge.target) ?? null
@@ -1259,13 +1313,13 @@ function TaskDetailDrawer({
 
   useEffect(() => {
     setReturnTargetId(current => {
-      if (current && feedbackTargets.some(item => item.node.id === current)) {
+      if (current && failureTargets.some(item => item.node.id === current)) {
         return current
       }
 
-      return feedbackTargets[0]?.node.id ?? ''
+      return failureTargets[0]?.node.id ?? ''
     })
-  }, [feedbackTargets])
+  }, [failureTargets])
 
   if (!node) {
     return (
@@ -1286,7 +1340,8 @@ function TaskDetailDrawer({
   const fileChanges = editable.fileChanges ?? []
   const selectedFileForReference = selectedFilePath && root ? normalizeProjectReference(root, selectedFilePath) : selectedFilePath
   const effectivePrompt = editable.promptOverride || node.description || copy.taskPlaceholder
-  const selectedReturnTarget = feedbackTargets.find(item => item.node.id === returnTargetId) ?? feedbackTargets[0] ?? null
+  const decisionNode = workflowNodeIsDecisionNode(workflow, node)
+  const selectedFailureTarget = failureTargets.find(item => item.node.id === returnTargetId) ?? failureTargets[0] ?? null
   const reviewDecision = parseReviewDecision(node.outputs?.reviewDecision)
 
   const updateDraft = (updates: Partial<WorkflowNode>) => {
@@ -1409,7 +1464,7 @@ function TaskDetailDrawer({
             <strong>{reviewDecisionLabel(copy, reviewDecision.decision)}</strong>
             {reviewDecision.targetNodeId ? (
               <>
-                <span>{copy.returnTarget}</span>
+                <span>{copy.failureTarget}</span>
                 <strong>{workflow?.nodes.find(candidate => candidate.id === reviewDecision.targetNodeId)?.title ?? reviewDecision.targetNodeId}</strong>
               </>
             ) : null}
@@ -1617,15 +1672,15 @@ function TaskDetailDrawer({
       </div>
 
       <div className="workflow-node-actions">
-        {waiting && feedbackTargets.length > 0 && (
+        {decisionNode && waiting && failureTargets.length > 0 && (
           <div className="workflow-return-controls">
-            {feedbackTargets.length > 1 ? (
-              <Select onValueChange={setReturnTargetId} value={selectedReturnTarget?.node.id ?? ''}>
+            {failureTargets.length > 1 ? (
+              <Select onValueChange={setReturnTargetId} value={selectedFailureTarget?.node.id ?? ''}>
                 <SelectTrigger className="h-8 text-xs">
-                  <SelectValue placeholder={copy.returnTarget} />
+                  <SelectValue placeholder={copy.failureTarget} />
                 </SelectTrigger>
                 <SelectContent>
-                  {feedbackTargets.map(item => (
+                  {failureTargets.map(item => (
                     <SelectItem key={item.node.id} value={item.node.id}>
                       {item.edge.label ? `${item.node.title} · ${item.edge.label}` : item.node.title}
                     </SelectItem>
@@ -1633,31 +1688,34 @@ function TaskDetailDrawer({
                 </SelectContent>
               </Select>
             ) : (
-              <span title={selectedReturnTarget?.node.id}>{copy.returnTarget}: {selectedReturnTarget?.node.title}</span>
+              <span title={selectedFailureTarget?.node.id}>{copy.failureTarget}: {selectedFailureTarget?.node.title}</span>
             )}
-            <Button
-              disabled={!runId || !selectedReturnTarget}
-              onClick={() =>
-                runId &&
-                selectedReturnTarget &&
-                onNodeAction('return', node.id, runId, {
-                  reason: `${copy.returnForRevision}: ${selectedReturnTarget.node.title}`,
-                  targetNodeId: selectedReturnTarget.node.id
-                })
-              }
-              size="sm"
-              type="button"
-              variant="outline"
-            >
-              <Codicon name="reply" size="0.875rem" />
-              {copy.returnForRevision}
-            </Button>
           </div>
         )}
-        <Button disabled={!waiting || !runId} onClick={() => runId && onNodeAction('confirm', node.id, runId)} size="sm" type="button">
+        <Button disabled={!waiting || !runId} onClick={() => runId && onNodeAction('pass', node.id, runId)} size="sm" type="button">
           <Codicon name="pass" size="0.875rem" />
-          {copy.confirm}
+          {decisionNode ? copy.pass : copy.confirm}
         </Button>
+        {decisionNode && (
+          <Button
+            disabled={!waiting || !runId || !selectedFailureTarget}
+            onClick={() =>
+              runId &&
+              selectedFailureTarget &&
+              onNodeAction('fail', node.id, runId, {
+                reason: `${copy.fail}: ${selectedFailureTarget.node.title}`,
+                targetNodeId: selectedFailureTarget.node.id
+              })
+            }
+            size="sm"
+            title={selectedFailureTarget ? undefined : copy.failureBranchNotConnected}
+            type="button"
+            variant="outline"
+          >
+            <Codicon name="error" size="0.875rem" />
+            {copy.fail}
+          </Button>
+        )}
         <Button disabled={!runId} onClick={() => runId && onNodeAction('retry', node.id, runId)} size="sm" type="button" variant="outline">
           <Codicon name="refresh" size="0.875rem" />
           {copy.retry}
@@ -2523,27 +2581,33 @@ function toFlowNodes(workflow: Workflow): FlowNode[] {
     position: node.position,
     width: 260,
     height: 112,
-    data: { node }
+    data: { decisionNode: workflowNodeIsDecisionNode(workflow, node), node }
   }))
 }
 
 function toFlowEdges(workflow: Workflow): FlowEdge[] {
   const nodeTitles = new Map(workflow.nodes.map(node => [node.id, node.title]))
 
-  return workflow.edges.map(edge => ({
-    id: edge.id,
-    source: edge.source,
-    target: edge.target,
-    label: edge.label || (edge.type === 'feedback' ? `Return to ${nodeTitles.get(edge.target) ?? edge.target}` : undefined),
-    type: edge.type === 'feedback' ? 'smoothstep' : 'default',
-    animated: edge.type === 'feedback',
-    markerEnd: edge.type === 'feedback' ? undefined : { type: MarkerType.ArrowClosed },
-    style:
-      edge.type === 'feedback'
+  return workflow.edges.map(edge => {
+    const sourceHandle = edgeSourceHandle(edge)
+    const failure = sourceHandle === 'failure'
+
+    return {
+      id: edge.id,
+      source: edge.source,
+      sourceHandle,
+      target: edge.target,
+      targetHandle: edge.targetHandle ?? 'input',
+      label: edge.label || (failure ? `Fail to ${nodeTitles.get(edge.target) ?? edge.target}` : undefined),
+      type: failure ? 'smoothstep' : 'default',
+      animated: failure,
+      markerEnd: failure ? undefined : { type: MarkerType.ArrowClosed },
+      style: failure
         ? { stroke: 'var(--workflow-edge-feedback)', strokeDasharray: '6 5', strokeWidth: 1.8 }
         : { stroke: 'var(--workflow-edge)', strokeWidth: 1.6 },
-    data: { kind: edge.type }
-  }))
+      data: { kind: failure ? 'failure' : 'success' }
+    }
+  })
 }
 
 function workflowWithPositions(workflow: Workflow, nodes: FlowNode[]): Workflow {
@@ -2632,6 +2696,48 @@ function reviewDecisionLabel(copy: WorkflowCopy, decision: ReviewDecision['decis
   }
 
   return copy.reviewDecisionNeedsHuman
+}
+
+function workflowEventNeedsCue(event: StreamEvent): boolean {
+  if (event.type === 'approval' || event.type === 'error') {
+    return true
+  }
+
+  if (event.type === 'process_summary' && event.status === 'warning') {
+    return true
+  }
+
+  return event.type === 'node_status' && (event.status === 'warning' || event.status === 'error')
+}
+
+function playWorkflowCue(): void {
+  try {
+    const AudioContextCtor = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (!AudioContextCtor) {
+      return
+    }
+
+    const context = new AudioContextCtor()
+    const oscillator = context.createOscillator()
+    const gain = context.createGain()
+    const now = context.currentTime
+
+    oscillator.type = 'sine'
+    oscillator.frequency.setValueAtTime(880, now)
+    oscillator.frequency.setValueAtTime(660, now + 0.12)
+    gain.gain.setValueAtTime(0.0001, now)
+    gain.gain.exponentialRampToValueAtTime(0.08, now + 0.02)
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.26)
+    oscillator.connect(gain)
+    gain.connect(context.destination)
+    oscillator.start(now)
+    oscillator.stop(now + 0.28)
+    oscillator.addEventListener('ended', () => {
+      void context.close().catch(() => undefined)
+    })
+  } catch {
+    // Audio cues are best-effort and must never block workflow execution.
+  }
 }
 
 function streamIsNearBottom(element: HTMLElement): boolean {

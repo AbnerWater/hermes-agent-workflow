@@ -565,6 +565,26 @@
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--ui-blue) 32%, transparent);
 }
 
+.workflow-handle--input {
+  top: 50%;
+}
+
+.workflow-handle--success {
+  top: 38%;
+  background: var(--ui-green);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ui-green) 36%, transparent);
+}
+
+.workflow-handle--single-output {
+  top: 50%;
+}
+
+.workflow-handle--failure {
+  top: 66%;
+  background: var(--ui-red);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--ui-red) 36%, transparent);
+}
+
 .workflow-status-pill {
   display: inline-flex;
   height: 1.25rem;

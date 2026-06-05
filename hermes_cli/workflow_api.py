@@ -126,6 +126,8 @@ class WorkflowEdge(BaseModel):
     type: str = "dependency"
     label: str = ""
     optional: bool = False
+    sourceHandle: Optional[str] = None
+    targetHandle: Optional[str] = None
 
 
 class Workflow(BaseModel):
@@ -344,6 +346,10 @@ class WorkflowRuntime:
         return lock
 
     def start(self, project: WorkflowProject, run: ExecutionRun) -> None:
+        existing = self._threads.get(run.id)
+        existing_stop = self._stop_flags.get(run.id)
+        if existing and existing.is_alive() and not (existing_stop and existing_stop.is_set()):
+            return
         stop = threading.Event()
         self._stop_flags[run.id] = stop
         thread = threading.Thread(target=_run_engine, args=(project.id, run.id, stop), daemon=True)
@@ -354,6 +360,10 @@ class WorkflowRuntime:
         flag = self._stop_flags.get(run_id)
         if flag:
             flag.set()
+
+    def should_stop(self, run_id: str) -> bool:
+        flag = self._stop_flags.get(run_id)
+        return bool(flag and flag.is_set())
 
 
 _runtime = WorkflowRuntime()
@@ -773,6 +783,30 @@ def create_workflow_router(ws_auth_ok: Callable[[WebSocket], bool]) -> APIRouter
     @router.post("/projects/{project_id}/runs")
     async def start_run(project_id: str, body: RunCreateRequest) -> Dict[str, Any]:
         project = _load_project(project_id)
+        if project.currentRunId:
+            try:
+                existing_run = _load_run(project.currentRunId)
+            except HTTPException:
+                existing_run = None
+            if existing_run and existing_run.status == "paused":
+                existing_run.status = "running"
+                existing_run.updatedAt = time.time()
+                _save_run(existing_run)
+                _append_event(
+                    project.id,
+                    StreamEvent(
+                        id=_new_id("evt"),
+                        projectId=project.id,
+                        runId=existing_run.id,
+                        type="process_summary",
+                        label="执行已恢复",
+                        summary="Run 从暂停节点继续，当前节点会重新执行以保证状态一致。",
+                        status="success",
+                    ),
+                )
+                _runtime.start(project, existing_run)
+                return {"ok": True, "run": existing_run, "project": project}
+
         workflow = _load_workflow(project)
         if not workflow.nodes:
             error = _generate_workflow_for_project(project, reason="workflow_generate_before_run")
@@ -812,6 +846,17 @@ def create_workflow_router(ws_auth_ok: Callable[[WebSocket], bool]) -> APIRouter
     async def pause_run(run_id: str) -> Dict[str, Any]:
         run = _load_run(run_id)
         project = _load_project(run.projectId)
+        _runtime.stop(run_id)
+        workflow = _load_workflow(project)
+        if run.currentNodeId:
+            try:
+                current = _node_by_id(workflow, run.currentNodeId)
+                if current.status in {"queued", "running", "reviewing"}:
+                    current.status = "ready"
+                    _reset_node_for_revision(current)
+                    _save_workflow(project, workflow)
+            except HTTPException:
+                pass
         run.status = "paused"
         run.updatedAt = time.time()
         _save_run(run)
@@ -823,7 +868,8 @@ def create_workflow_router(ws_auth_ok: Callable[[WebSocket], bool]) -> APIRouter
                 runId=run.id,
                 type="process_summary",
                 label="执行已暂停",
-                summary="当前 run 已暂停，恢复后会从持久化状态继续调度 ready 节点。",
+                summary="当前 agent 已请求停止；恢复后会从当前节点重新执行。",
+                status="warning",
             ),
         )
         return {"ok": True, "run": run}
@@ -856,17 +902,13 @@ def create_workflow_router(ws_auth_ok: Callable[[WebSocket], bool]) -> APIRouter
         project = _load_project(run.projectId)
         _runtime.stop(run_id)
         run.status = "stopped"
+        run.currentNodeId = None
         run.completedAt = time.time()
         run.updatedAt = run.completedAt
         _save_run(run)
         workflow = _load_workflow(project)
-        changed = False
-        for node in workflow.nodes:
-            if node.status in {"queued", "running", "reviewing"}:
-                node.status = "aborted"
-                changed = True
-        if changed:
-            _save_workflow(project, workflow)
+        _reset_workflow_progress(workflow)
+        _save_workflow(project, workflow)
         _append_event(
             project.id,
             StreamEvent(
@@ -875,7 +917,7 @@ def create_workflow_router(ws_auth_ok: Callable[[WebSocket], bool]) -> APIRouter
                 runId=run.id,
                 type="process_summary",
                 label="执行已停止",
-                summary="已请求停止当前 run，未完成节点被标记为 aborted。",
+                summary="已请求停止当前 agent，并将 workflow 执行进度重置到起点。",
                 status="warning",
             ),
         )
@@ -893,6 +935,10 @@ def create_workflow_router(ws_auth_ok: Callable[[WebSocket], bool]) -> APIRouter
         _runtime.start(project, run)
         return {"ok": True, "run": run, "workflow": workflow}
 
+    @router.post("/runs/{run_id}/nodes/{node_id}/pass")
+    async def pass_node(run_id: str, node_id: str) -> Dict[str, Any]:
+        return await confirm_node(run_id, node_id)
+
     @router.post("/runs/{run_id}/nodes/{node_id}/return")
     async def return_node(run_id: str, node_id: str, body: NodeReturnRequest) -> Dict[str, Any]:
         run = _load_run(run_id)
@@ -904,6 +950,10 @@ def create_workflow_router(ws_auth_ok: Callable[[WebSocket], bool]) -> APIRouter
         decision = _apply_node_return(project, workflow, run, node, body.targetNodeId, body.reason or "User requested revision")
         _runtime.start(project, run)
         return {"ok": True, "run": run, "workflow": workflow, "decision": decision.model_dump()}
+
+    @router.post("/runs/{run_id}/nodes/{node_id}/fail")
+    async def fail_node(run_id: str, node_id: str, body: NodeReturnRequest) -> Dict[str, Any]:
+        return await return_node(run_id, node_id, body)
 
     @router.post("/runs/{run_id}/nodes/{node_id}/retry")
     async def retry_node(run_id: str, node_id: str) -> Dict[str, Any]:
@@ -1260,6 +1310,8 @@ def _execute_node(project: WorkflowProject, workflow: Workflow, run: ExecutionRu
         node.agentSessionId = result.session_id
         final_text = _strip_reasoning(result.text)
     except Exception as exc:
+        if _runtime.should_stop(run.id) or _load_run(run.id).status in {"paused", "stopped"}:
+            return
         node.status = "failed"
         node.retryCount += 1
         node.outputs.update({"error": str(exc), "failedAt": time.time()})
@@ -1279,6 +1331,9 @@ def _execute_node(project: WorkflowProject, workflow: Workflow, run: ExecutionRu
                 durationMs=int((time.time() - started) * 1000),
             ),
         )
+        return
+
+    if _runtime.should_stop(run.id) or _load_run(run.id).status in {"paused", "stopped"}:
         return
 
     artifact = _write_node_artifact(project, run, node, final_text)
@@ -2038,7 +2093,7 @@ def _workflow_generation_prompt(project: WorkflowProject) -> str:
         "nodes": [
             {
                 "id": "stable-lowercase-id",
-                "type": "planning|reference|execution|review|delivery|task",
+                "type": "planning|reference|execution|review|test|delivery|task",
                 "title": "short title",
                 "description": "what the node must accomplish",
                 "skills": ["optional skill names"],
@@ -2053,6 +2108,8 @@ def _workflow_generation_prompt(project: WorkflowProject) -> str:
                 "source": "source-node-id",
                 "target": "target-node-id",
                 "type": "dependency|feedback",
+                "sourceHandle": "success|failure",
+                "targetHandle": "input",
                 "label": "short label",
                 "optional": False,
             }
@@ -2062,9 +2119,13 @@ def _workflow_generation_prompt(project: WorkflowProject) -> str:
         [
             "Create an initial workflow for this Hermes desktop project.",
             "The workflow must be executable by independent Hermes Agent node runs.",
-            "Include planning, reference/context handling when useful, execution, review, and final delivery nodes.",
-            "Use dependency edges for forward execution. Use type='feedback' only for bounded revision loops.",
-            "Feedback edges must go from review nodes back to earlier planning/reference/execution nodes that can be reworked.",
+            "Include planning, reference/context handling when useful, execution/task, review/test decision, and final delivery nodes.",
+            "There are two node classes. Ordinary task nodes (task/planning/reference/execution/delivery) have one input and one output: sourceHandle='success'.",
+            "Review/test decision nodes (review/test/testing) have one input and two outputs: sourceHandle='success' for pass and sourceHandle='failure' for fail.",
+            "Each output port can have at most one edge. Multiple upstream outputs may connect to the same target input.",
+            "Ordinary task nodes must not have failure output edges. If branching or quality judgment is needed, insert a review/test decision node.",
+            "Use success output edges for forward execution. Use failure output edges only from review/test nodes for failed review, failed test, or bounded revision loops.",
+            "Represent failure/revision edges with type='feedback' and sourceHandle='failure'. They should usually go from review/test nodes back to earlier planning/reference/execution nodes that can be reworked.",
             "At least one start node must have no dependencies. Include no ordinary dependency cycles.",
             "",
             f"Project name: {project.name}",
@@ -2114,6 +2175,12 @@ def _workflow_from_agent_text(project: WorkflowProject, text: str) -> Workflow:
         edge_type = str(raw.get("type") or "dependency").strip() or "dependency"
         if edge_type not in {"dependency", "feedback"}:
             edge_type = "dependency"
+        source_handle = str(raw.get("sourceHandle") or "").strip().lower()
+        if source_handle not in {"success", "failure"}:
+            source_handle = "failure" if edge_type == "feedback" else "success"
+        if source_handle == "failure":
+            edge_type = "feedback"
+        target_handle = str(raw.get("targetHandle") or "input").strip().lower() or "input"
         edge_id = str(raw.get("id") or f"edge-{source}-{target}-{idx}").strip()
         edges.append(
             WorkflowEdge(
@@ -2121,6 +2188,8 @@ def _workflow_from_agent_text(project: WorkflowProject, text: str) -> Workflow:
                 source=source,
                 target=target,
                 type=edge_type,
+                sourceHandle=source_handle,
+                targetHandle=target_handle,
                 label=str(raw.get("label") or ""),
                 optional=bool(raw.get("optional", False)),
             )
@@ -2152,7 +2221,7 @@ def _workflow_node_from_raw(raw: Dict[str, Any], index: int, used_ids: set[str])
         inputs=raw.get("inputs") if isinstance(raw.get("inputs"), dict) else {},
         outputs={},
         reviewRules=ReviewRules(
-            required=bool(review_raw.get("required", raw.get("type") in {"review", "delivery"})),
+            required=bool(review_raw.get("required", raw.get("type") in {"review", "test", "testing"})),
             checklist=[str(item) for item in checklist if str(item).strip()],
         ),
         skills=[str(skill) for skill in skills if str(skill).strip()],
@@ -2215,7 +2284,7 @@ def _sample_workflow(project: WorkflowProject) -> Workflow:
             title="执行策略",
             description="生成可执行 workflow、依赖关系和 review gate。",
             position=WorkflowPosition(x=360, y=220),
-            reviewRules=ReviewRules(required=True, checklist=["包含分支和并行", "风险点可检查"]),
+            reviewRules=ReviewRules(required=False, checklist=["包含分支和并行", "风险点可检查"]),
             skills=["planner"],
         ),
         WorkflowNode(
@@ -2242,18 +2311,17 @@ def _sample_workflow(project: WorkflowProject) -> Workflow:
             title="最终交付",
             description="汇总 artifacts、stream 事件和最终说明。",
             position=WorkflowPosition(x=1360, y=110),
-            reviewRules=ReviewRules(required=True, checklist=["快照已创建", "交付说明完整"]),
+            reviewRules=ReviewRules(required=False, checklist=["快照已创建", "交付说明完整"]),
             skills=["writer"],
         ),
     ]
     edges = [
-        WorkflowEdge(id="edge-intake-references", source="intake", target="references", label="资料"),
-        WorkflowEdge(id="edge-intake-strategy", source="intake", target="strategy", label="策略"),
-        WorkflowEdge(id="edge-references-implementation", source="references", target="implementation", label="上下文"),
-        WorkflowEdge(id="edge-strategy-implementation", source="strategy", target="implementation", label="计划"),
-        WorkflowEdge(id="edge-implementation-review", source="implementation", target="review", label="审查"),
-        WorkflowEdge(id="edge-review-delivery", source="review", target="delivery", label="确认"),
-        WorkflowEdge(id="edge-review-strategy", source="review", target="strategy", type="feedback", label="修订回路"),
+        WorkflowEdge(id="edge-intake-references", source="intake", target="references", sourceHandle="success", targetHandle="input", label="资料"),
+        WorkflowEdge(id="edge-references-strategy", source="references", target="strategy", sourceHandle="success", targetHandle="input", label="上下文"),
+        WorkflowEdge(id="edge-strategy-implementation", source="strategy", target="implementation", sourceHandle="success", targetHandle="input", label="计划"),
+        WorkflowEdge(id="edge-implementation-review", source="implementation", target="review", sourceHandle="success", targetHandle="input", label="审查"),
+        WorkflowEdge(id="edge-review-delivery", source="review", target="delivery", sourceHandle="success", targetHandle="input", label="确认"),
+        WorkflowEdge(id="edge-review-strategy", source="review", target="strategy", type="feedback", sourceHandle="failure", targetHandle="input", label="修订回路"),
     ]
     return Workflow(id=_new_id("wf"), title=project.name, nodes=nodes, edges=edges)
 
@@ -2262,16 +2330,30 @@ def _validate_workflow(workflow: Workflow) -> None:
     ids = {node.id for node in workflow.nodes}
     if len(ids) != len(workflow.nodes):
         raise HTTPException(status_code=422, detail="Workflow node ids must be unique")
+    outgoing_ports: set[tuple[str, str]] = set()
     for edge in workflow.edges:
         if edge.source not in ids or edge.target not in ids:
             raise HTTPException(status_code=422, detail=f"Edge {edge.id} references an unknown node")
+        source_node = _node_by_id(workflow, edge.source)
+        source_handle = _edge_source_handle(edge)
+        target_handle = _edge_target_handle(edge)
+        if source_handle not in {"success", "failure"}:
+            raise HTTPException(status_code=422, detail=f"Edge {edge.id} has an invalid source handle")
+        if target_handle != "input":
+            raise HTTPException(status_code=422, detail=f"Edge {edge.id} has an invalid target handle")
+        if source_handle == "failure" and not _node_is_decision_node(workflow, source_node):
+            raise HTTPException(status_code=422, detail=f"Node {edge.source} is not a review/test decision node and cannot use a failure output")
+        port_key = (edge.source, source_handle)
+        if port_key in outgoing_ports:
+            raise HTTPException(status_code=422, detail=f"Node {edge.source} output '{source_handle}' can connect to only one input")
+        outgoing_ports.add(port_key)
     _detect_dependency_cycles(workflow)
 
 
 def _detect_dependency_cycles(workflow: Workflow) -> None:
     graph: dict[str, list[str]] = {node.id: [] for node in workflow.nodes}
     for edge in workflow.edges:
-        if edge.type == "feedback":
+        if _edge_source_handle(edge) == "failure":
             continue
         graph.setdefault(edge.source, []).append(edge.target)
     visiting: set[str] = set()
@@ -2295,12 +2377,50 @@ def _detect_dependency_cycles(workflow: Workflow) -> None:
         visit(node_id)
 
 
+def _edge_source_handle(edge: WorkflowEdge) -> str:
+    raw = str(edge.sourceHandle or "").strip().lower()
+    if raw in {"success", "failure"}:
+        return raw
+    if edge.type == "feedback":
+        return "failure"
+    return "success"
+
+
+def _edge_target_handle(edge: WorkflowEdge) -> str:
+    raw = str(edge.targetHandle or "").strip().lower()
+    return raw or "input"
+
+
+def _success_edges(workflow: Workflow, node_id: Optional[str] = None) -> List[WorkflowEdge]:
+    return [
+        edge
+        for edge in workflow.edges
+        if _edge_source_handle(edge) == "success" and (node_id is None or edge.source == node_id)
+    ]
+
+
+def _failure_edges(workflow: Workflow, node_id: str) -> List[WorkflowEdge]:
+    return [edge for edge in workflow.edges if edge.source == node_id and _edge_source_handle(edge) == "failure"]
+
+
+def _node_is_decision_node(workflow: Workflow, node: WorkflowNode) -> bool:
+    node_type = str(node.type or "").strip().lower()
+    return node_type in {"review", "test", "testing"} or node.reviewRules.required or _node_has_legacy_feedback_edge(workflow, node.id)
+
+
+def _node_has_legacy_feedback_edge(workflow: Workflow, node_id: str) -> bool:
+    return any(edge.source == node_id and edge.type == "feedback" and edge.sourceHandle is None for edge in workflow.edges)
+
+
 def _promote_ready_nodes(workflow: Workflow) -> None:
     terminal = {"completed", "skipped"}
     for node in workflow.nodes:
         if node.status not in {"created", "revision_needed", "retrying"}:
             continue
         deps = _incoming_dependencies(workflow, node.id)
+        incoming_failures = _incoming_failure_edges(workflow, node.id)
+        if not deps and incoming_failures and not any(node.id in _dependency_ancestors(workflow, edge.source) for edge in incoming_failures):
+            continue
         if all(_node_by_id(workflow, dep.source).status in terminal for dep in deps):
             node.status = "ready"
 
@@ -2312,7 +2432,7 @@ def _workflow_is_done(workflow: Workflow) -> bool:
 
 
 def _feedback_edges(workflow: Workflow, node_id: str) -> List[WorkflowEdge]:
-    return [edge for edge in workflow.edges if edge.source == node_id and edge.type == "feedback"]
+    return _failure_edges(workflow, node_id)
 
 
 def _feedback_target_ids(workflow: Workflow, node_id: str) -> set[str]:
@@ -2320,15 +2440,15 @@ def _feedback_target_ids(workflow: Workflow, node_id: str) -> set[str]:
 
 
 def _node_requires_review_decision(workflow: Workflow, node: WorkflowNode) -> bool:
-    return node.type == "review" or bool(_feedback_edges(workflow, node.id))
+    return _node_is_decision_node(workflow, node)
 
 
 def _dependency_successors(workflow: Workflow, node_id: str) -> List[str]:
-    return [edge.target for edge in workflow.edges if edge.source == node_id and edge.type != "feedback"]
+    return [edge.target for edge in _success_edges(workflow, node_id)]
 
 
 def _dependency_predecessors(workflow: Workflow, node_id: str) -> List[str]:
-    return [edge.source for edge in workflow.edges if edge.target == node_id and edge.type != "feedback"]
+    return [edge.source for edge in _success_edges(workflow) if edge.target == node_id]
 
 
 def _dependency_descendants(workflow: Workflow, start_id: str) -> set[str]:
@@ -2360,6 +2480,14 @@ def _reset_node_for_revision(node: WorkflowNode) -> None:
     node.outputs.pop("confirmedAt", None)
     node.outputs.pop("skippedAt", None)
     node.outputs.pop("failedAt", None)
+
+
+def _reset_workflow_progress(workflow: Workflow) -> None:
+    for node in workflow.nodes:
+        node.status = "created"
+        node.retryCount = 0
+        _reset_node_for_revision(node)
+    _promote_ready_nodes(workflow)
 
 
 def _apply_node_confirm(
@@ -2565,7 +2693,7 @@ def _node_needs_confirmation(run: ExecutionRun, node: WorkflowNode) -> bool:
         return False
     if run.mode == "single_step":
         return True
-    return bool(node.reviewRules.required or node.type in {"review", "delivery"})
+    return bool(node.reviewRules.required or node.type in {"review", "test", "testing", "delivery"})
 
 
 def _append_node_status(
@@ -2742,7 +2870,7 @@ def _node_execution_prompt(project: WorkflowProject, workflow: Workflow, run: Ex
             f"Node selected references JSON:\n{json.dumps(selected_refs, ensure_ascii=False, indent=2)}",
             f"Enabled skills JSON:\n{json.dumps(enabled_skills, ensure_ascii=False, indent=2)}",
             f"Effective model override: {node.modelOverride or node.model or 'global/default'}",
-            f"Feedback return targets JSON:\n{json.dumps(feedback_targets, ensure_ascii=False, indent=2)}",
+            f"Failure output targets JSON:\n{json.dumps(feedback_targets, ensure_ascii=False, indent=2)}",
             "",
             "Final response requirements:",
             "- State what was done for this node.",
@@ -2752,7 +2880,7 @@ def _node_execution_prompt(project: WorkflowProject, workflow: Workflow, run: Ex
             (
                 "- Review decision: because this node is a review/feedback gate, end the final answer with "
                 "<workflow_review_decision>{\"decision\":\"pass|return\",\"targetNodeId\":\"feedback-target-id-or-null\",\"reason\":\"brief visible reason\"}</workflow_review_decision>. "
-                "Use decision='pass' only when the acceptance criteria are satisfied. Use decision='return' only with one of the listed feedback target ids when revision is needed."
+                "Use decision='pass' only when the acceptance criteria are satisfied. Use decision='return' only with one of the listed failure target ids when revision or failure handling is needed."
                 if _node_requires_review_decision(workflow, node)
                 else ""
             ),
@@ -3323,7 +3451,11 @@ def _node_by_id(workflow: Workflow, node_id: Optional[str]) -> WorkflowNode:
 
 
 def _incoming_dependencies(workflow: Workflow, node_id: str) -> List[WorkflowEdge]:
-    return [edge for edge in workflow.edges if edge.target == node_id and edge.type != "feedback"]
+    return [edge for edge in _success_edges(workflow) if edge.target == node_id]
+
+
+def _incoming_failure_edges(workflow: Workflow, node_id: str) -> List[WorkflowEdge]:
+    return [edge for edge in workflow.edges if edge.target == node_id and _edge_source_handle(edge) == "failure"]
 
 
 def _reference_from_path(path: str) -> ReferenceItem:

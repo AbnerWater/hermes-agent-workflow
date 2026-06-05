@@ -558,6 +558,13 @@ export function confirmWorkflowNode(runId: string, nodeId: string): Promise<Work
   })
 }
 
+export function passWorkflowNode(runId: string, nodeId: string): Promise<WorkflowRunResponse> {
+  return window.hermesDesktop.api<WorkflowRunResponse>({
+    path: `/api/workflows/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/pass`,
+    method: 'POST'
+  })
+}
+
 export function retryWorkflowNode(runId: string, nodeId: string): Promise<WorkflowRunResponse> {
   return window.hermesDesktop.api<WorkflowRunResponse>({
     path: `/api/workflows/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/retry`,
@@ -572,6 +579,18 @@ export function returnWorkflowNode(
 ): Promise<WorkflowRunResponse> {
   return window.hermesDesktop.api<WorkflowRunResponse>({
     path: `/api/workflows/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/return`,
+    method: 'POST',
+    body: payload
+  })
+}
+
+export function failWorkflowNode(
+  runId: string,
+  nodeId: string,
+  payload: { reason?: string; targetNodeId: string }
+): Promise<WorkflowRunResponse> {
+  return window.hermesDesktop.api<WorkflowRunResponse>({
+    path: `/api/workflows/runs/${encodeURIComponent(runId)}/nodes/${encodeURIComponent(nodeId)}/fail`,
     method: 'POST',
     body: payload
   })

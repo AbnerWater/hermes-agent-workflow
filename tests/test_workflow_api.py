@@ -249,6 +249,74 @@ def test_workflow_feedback_return_rejects_invalid_target(tmp_path, monkeypatch):
     assert response.status_code == 422
 
 
+def test_workflow_pass_and_fail_endpoints_use_success_and_failure_ports(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    wf, project, _workflow, run = _create_feedback_project(tmp_path, monkeypatch)
+    app = FastAPI()
+    app.include_router(wf.create_workflow_router(lambda _ws: True))
+    client = TestClient(app)
+
+    pass_response = client.post(f"/api/workflows/runs/{run.id}/nodes/review/pass")
+    assert pass_response.status_code == 200
+    pass_statuses = {node.id: node.status for node in wf._load_workflow(project).nodes}
+    assert pass_statuses["review"] == "completed"
+    assert pass_statuses["delivery"] == "ready"
+
+    wf._save_workflow(project, _feedback_workflow(wf))
+    run.status = "waiting_user_confirm"
+    run.currentNodeId = "review"
+    wf._save_run(run)
+    fail_response = client.post(
+        f"/api/workflows/runs/{run.id}/nodes/review/fail",
+        json={"targetNodeId": "plan", "reason": "Acceptance checks failed."},
+    )
+    assert fail_response.status_code == 200
+    fail_by_id = {node.id: node for node in wf._load_workflow(project).nodes}
+    assert fail_by_id["plan"].status == "ready"
+    assert fail_by_id["plan"].retryCount == 1
+    assert fail_by_id["review"].outputs["returnTargetId"] == "plan"
+
+
+def test_workflow_pause_preserves_current_node_and_stop_resets_progress(tmp_path, monkeypatch):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    wf, project, workflow, run = _create_feedback_project(tmp_path, monkeypatch)
+    review = wf._node_by_id(workflow, "review")
+    review.status = "running"
+    review.outputs["completedAt"] = 123.0
+    wf._save_workflow(project, workflow)
+    run.status = "running"
+    run.currentNodeId = "review"
+    wf._save_run(run)
+    app = FastAPI()
+    app.include_router(wf.create_workflow_router(lambda _ws: True))
+    client = TestClient(app)
+
+    pause_response = client.post(f"/api/workflows/runs/{run.id}/pause")
+    assert pause_response.status_code == 200
+    paused_run = wf._load_run(run.id)
+    paused_review = wf._node_by_id(wf._load_workflow(project), "review")
+    assert paused_run.status == "paused"
+    assert paused_run.currentNodeId == "review"
+    assert paused_review.status == "ready"
+    assert "completedAt" not in paused_review.outputs
+
+    stop_response = client.post(f"/api/workflows/runs/{run.id}/stop")
+    assert stop_response.status_code == 200
+    stopped_run = wf._load_run(run.id)
+    stopped = {node.id: node for node in wf._load_workflow(project).nodes}
+    assert stopped_run.status == "stopped"
+    assert stopped_run.currentNodeId is None
+    assert stopped["plan"].status == "ready"
+    assert stopped["implement"].status == "created"
+    assert stopped["review"].status == "created"
+    assert stopped["delivery"].status == "created"
+    assert all(node.retryCount == 0 for node in stopped.values())
+
+
 def test_workflow_auto_review_pass_and_return_decisions(tmp_path, monkeypatch):
     from hermes_cli import workflow_api as wf
 
@@ -760,3 +828,139 @@ def test_workflow_validation_allows_feedback_but_rejects_dependency_cycle():
         assert exc.status_code == 422
     else:
         raise AssertionError("dependency cycle should be rejected")
+
+
+def test_workflow_validation_enforces_one_edge_per_output_port():
+    from fastapi import HTTPException
+
+    from hermes_cli import workflow_api as wf
+
+    workflow = wf.Workflow(
+        id="wf",
+        title="duplicate output",
+        nodes=[
+            wf.WorkflowNode(id="a", title="A"),
+            wf.WorkflowNode(id="b", title="B"),
+            wf.WorkflowNode(id="c", title="C"),
+        ],
+        edges=[
+            wf.WorkflowEdge(id="ab", source="a", target="b", sourceHandle="success", targetHandle="input"),
+            wf.WorkflowEdge(id="ac", source="a", target="c", sourceHandle="success", targetHandle="input"),
+        ],
+    )
+
+    try:
+        wf._validate_workflow(workflow)
+    except HTTPException as exc:
+        assert exc.status_code == 422
+        assert "success" in str(exc.detail)
+    else:
+        raise AssertionError("duplicate output port should be rejected")
+
+
+def test_workflow_validation_rejects_failure_output_from_ordinary_node():
+    from fastapi import HTTPException
+
+    from hermes_cli import workflow_api as wf
+
+    workflow = wf.Workflow(
+        id="wf",
+        title="ordinary failure output",
+        nodes=[
+            wf.WorkflowNode(id="task", type="execution", title="Task"),
+            wf.WorkflowNode(id="repair", type="execution", title="Repair"),
+        ],
+        edges=[
+            wf.WorkflowEdge(
+                id="task-repair",
+                source="task",
+                target="repair",
+                type="feedback",
+                sourceHandle="failure",
+                targetHandle="input",
+            ),
+        ],
+    )
+
+    try:
+        wf._validate_workflow(workflow)
+    except HTTPException as exc:
+        assert exc.status_code == 422
+        assert "not a review/test" in str(exc.detail)
+    else:
+        raise AssertionError("ordinary task failure output should be rejected")
+
+
+def test_workflow_validation_allows_review_node_success_and_failure_outputs():
+    from hermes_cli import workflow_api as wf
+
+    workflow = wf.Workflow(
+        id="wf",
+        title="review decision outputs",
+        nodes=[
+            wf.WorkflowNode(id="review", type="review", title="Review"),
+            wf.WorkflowNode(id="delivery", type="delivery", title="Delivery"),
+            wf.WorkflowNode(id="repair", type="execution", title="Repair"),
+        ],
+        edges=[
+            wf.WorkflowEdge(id="review-delivery", source="review", target="delivery", sourceHandle="success", targetHandle="input"),
+            wf.WorkflowEdge(id="review-repair", source="review", target="repair", type="feedback", sourceHandle="failure", targetHandle="input"),
+        ],
+    )
+
+    wf._validate_workflow(workflow)
+
+
+def test_workflow_delivery_confirmation_is_not_review_decision():
+    from hermes_cli import workflow_api as wf
+
+    workflow = wf.Workflow(
+        id="wf",
+        title="delivery ordinary confirmation",
+        nodes=[wf.WorkflowNode(id="delivery", type="delivery", title="Delivery", reviewRules=wf.ReviewRules(required=False))],
+    )
+    run = wf.ExecutionRun(id="run", projectId="project", mode="semi_auto", status="running")
+
+    assert wf._node_needs_confirmation(run, workflow.nodes[0]) is True
+    assert wf._node_requires_review_decision(workflow, workflow.nodes[0]) is False
+
+
+def test_workflow_validation_treats_legacy_feedback_as_failure_output():
+    from hermes_cli import workflow_api as wf
+
+    workflow = wf.Workflow(
+        id="wf",
+        title="legacy feedback",
+        nodes=[
+            wf.WorkflowNode(id="a", title="A"),
+            wf.WorkflowNode(id="b", title="B"),
+        ],
+        edges=[
+            wf.WorkflowEdge(id="ab", source="a", target="b"),
+            wf.WorkflowEdge(id="ba", source="b", target="a", type="feedback"),
+        ],
+    )
+
+    wf._validate_workflow(workflow)
+    assert wf._feedback_target_ids(workflow, "b") == {"a"}
+
+
+def test_workflow_failure_only_target_is_not_promoted_as_root():
+    from hermes_cli import workflow_api as wf
+
+    workflow = wf.Workflow(
+        id="wf",
+        title="failure branch",
+        nodes=[
+            wf.WorkflowNode(id="review", title="Review", type="review"),
+            wf.WorkflowNode(id="repair", title="Repair", type="execution"),
+        ],
+        edges=[
+            wf.WorkflowEdge(id="review-repair", source="review", target="repair", type="feedback", sourceHandle="failure"),
+        ],
+    )
+
+    wf._promote_ready_nodes(workflow)
+    statuses = {node.id: node.status for node in workflow.nodes}
+    assert statuses["review"] == "ready"
+    assert statuses["repair"] == "created"
