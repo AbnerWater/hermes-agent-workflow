@@ -27,6 +27,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { useAppCopy } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
@@ -84,6 +85,7 @@ const stepThroughCells: Modifier = ({ containerNodeRect, draggingNodeRect, trans
 // profile users see only the "+" (create their first profile); everything else
 // appears once a second profile exists.
 export function ProfileRail() {
+  const copy = useAppCopy()
   const profiles = useStore($profiles)
   const scope = useStore($profileScope)
   const gatewayProfile = useStore($activeGatewayProfile)
@@ -126,7 +128,11 @@ export function ProfileRail() {
   const defaultProfile = profiles.find(profile => profile.is_default)
   const onDefault = !isAll && activeKey === 'default'
 
-  const named = sortByProfileOrder(profiles.filter(profile => !profile.is_default), order)
+  const named = sortByProfileOrder(
+    profiles.filter(profile => !profile.is_default),
+    order
+  )
+
   const multiProfile = profiles.length > 1
 
   // distance constraint: a small drag reorders, a tap still selects the profile.
@@ -176,7 +182,7 @@ export function ProfileRail() {
   }, [])
 
   return (
-    <div aria-label="Profiles" className="flex items-center gap-0.5" role="tablist">
+    <div aria-label={copy.common.profiles} className="flex items-center gap-0.5" role="tablist">
       {/* One button toggles default ↔ all: home face when scoped to a profile,
           layers face when showing everything. Pinned left like Manage is right.
           Hidden until a second profile exists. */}
@@ -187,16 +193,26 @@ export function ProfileRail() {
           <ProfilePill
             active={isAll || onDefault}
             glyph={isAll ? 'layers' : 'home'}
-            label={onDefault ? 'Show all profiles' : `Switch to ${defaultProfile.name}`}
+            label={onDefault ? copy.sidebar.showAllProfiles : copy.sidebar.switchToProfile(defaultProfile.name)}
             onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
           />
         ) : (
-          <ProfilePill active={isAll} glyph="layers" label="All profiles" onSelect={() => setShowAllProfiles(true)} />
+          <ProfilePill
+            active={isAll}
+            glyph="layers"
+            label={copy.common.allProfiles}
+            onSelect={() => setShowAllProfiles(true)}
+          />
         ))}
 
       {/* Single-profile: the active default's home icon next to the create +. */}
       {!multiProfile && defaultProfile && (
-        <ProfilePill active glyph="home" label={defaultProfile.name} onSelect={() => selectProfile(defaultProfile.name)} />
+        <ProfilePill
+          active
+          glyph="home"
+          label={defaultProfile.name}
+          onSelect={() => selectProfile(defaultProfile.name)}
+        />
       )}
 
       <div
@@ -233,9 +249,9 @@ export function ProfileRail() {
           </DndContext>
         )}
 
-        <Tip label="New profile">
+        <Tip label={copy.common.newProfile}>
           <button
-            aria-label="New profile"
+            aria-label={copy.common.newProfile}
             className="grid size-5 shrink-0 place-items-center rounded-[3px] text-(--ui-text-tertiary) opacity-55 transition hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100"
             onClick={() => setCreateOpen(true)}
             type="button"
@@ -246,7 +262,12 @@ export function ProfileRail() {
       </div>
 
       {multiProfile && (
-        <ProfilePill active={false} glyph="ellipsis" label="Manage profiles…" onSelect={() => navigate(PROFILES_ROUTE)} />
+        <ProfilePill
+          active={false}
+          glyph="ellipsis"
+          label={copy.sidebar.manageProfiles}
+          onSelect={() => navigate(PROFILES_ROUTE)}
+        />
       )}
 
       {/* Land in the new profile on a fresh chat (selectProfile triggers the
@@ -328,6 +349,7 @@ const LONG_PRESS_MS = 450
 // context-menu triggers via nested asChild Slots, so a single element keeps the
 // dnd listeners, hover tip, and right-click menu.
 function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, onSelect }: ProfileSquareProps) {
+  const copy = useAppCopy()
   const hue = color ?? 'var(--ui-text-quaternary)'
   const [pickerOpen, setPickerOpen] = useState(false)
   const pressTimer = useRef<null | number>(null)
@@ -436,27 +458,31 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
         {/* The rail sits at the very bottom, so pad off the chrome (esp. the
             statusbar) — Radix then flips the menu up instead of squishing it. */}
         <ContextMenuContent
-          aria-label={`Actions for ${label}`}
+          aria-label={copy.sidebar.actionsFor(label)}
           className="w-40"
           collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
         >
           <ContextMenuItem onSelect={() => setPickerOpen(true)}>
             <Codicon name="symbol-color" size="0.875rem" />
-            <span>Color…</span>
+            <span>{copy.sidebar.color}</span>
           </ContextMenuItem>
           <ContextMenuItem onSelect={onRename}>
             <Codicon name="edit" size="0.875rem" />
-            <span>Rename</span>
+            <span>{copy.common.rename}</span>
           </ContextMenuItem>
-          <ContextMenuItem className="text-destructive focus:text-destructive" onSelect={onDelete} variant="destructive">
+          <ContextMenuItem
+            className="text-destructive focus:text-destructive"
+            onSelect={onDelete}
+            variant="destructive"
+          >
             <Codicon name="trash" size="0.875rem" />
-            <span>Delete</span>
+            <span>{copy.common.delete}</span>
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
 
       <PopoverContent
-        aria-label={`Color for ${label}`}
+        aria-label={copy.sidebar.colorFor(label)}
         className="w-auto p-2"
         collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
         side="top"

@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
 import { Tip } from '@/components/ui/tooltip'
+import { useAppCopy } from '@/i18n'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
@@ -32,12 +33,8 @@ interface RightSidebarTab {
   label: string
 }
 
-const RIGHT_SIDEBAR_TABS: readonly RightSidebarTab[] = [
-  { id: 'files', label: 'File system', icon: 'list-tree' },
-  { id: 'terminal', label: 'Terminal', icon: 'terminal' }
-]
-
 export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd }: RightSidebarPaneProps) {
+  const copy = useAppCopy().rightSidebar
   const activeTab = useStore($rightSidebarTab)
   const terminalTakeover = useStore($terminalTakeover)
   const panesFlipped = useStore($panesFlipped)
@@ -50,7 +47,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
         .split(/[\\/]+/)
         .filter(Boolean)
         .pop() ?? currentCwd)
-    : 'No folder selected'
+    : copy.noFolderSelected
 
   const {
     collapseAll,
@@ -72,7 +69,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
       defaultPath: hasCwd ? currentCwd : undefined,
       directories: true,
       multiple: false,
-      title: 'Change working directory'
+      title: copy.changeWorkingDirectory
     })
 
     if (selected?.[0]) {
@@ -90,15 +87,20 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
 
       setCurrentSessionPreviewTarget(preview, 'file-browser', path)
     } catch (error) {
-      notifyError(error, 'Preview unavailable')
+      notifyError(error, copy.previewUnavailable)
     }
   }
 
-  const tabs = terminalTakeover ? RIGHT_SIDEBAR_TABS.filter(tab => tab.id !== 'terminal') : RIGHT_SIDEBAR_TABS
+  const rightSidebarTabs: readonly RightSidebarTab[] = [
+    { id: 'files', label: copy.fileSystem, icon: 'list-tree' },
+    { id: 'terminal', label: copy.terminal, icon: 'terminal' }
+  ]
+
+  const tabs = terminalTakeover ? rightSidebarTabs.filter(tab => tab.id !== 'terminal') : rightSidebarTabs
 
   return (
     <aside
-      aria-label="Right sidebar"
+      aria-label={copy.rightSidebar}
       className={cn(
         'before:pointer-events-none relative flex h-full w-full min-w-0 flex-col overflow-hidden border-(--ui-stroke-secondary) bg-(--ui-sidebar-surface-background) pt-(--titlebar-height) text-(--ui-text-tertiary)',
         panesFlipped
@@ -144,10 +146,12 @@ function RightSidebarChrome({
   branch: string
   tabs: readonly RightSidebarTab[]
 }) {
+  const copy = useAppCopy().rightSidebar
+
   return (
     <header className="shrink-0 bg-transparent text-[0.75rem]">
       <div className="flex items-center gap-2 px-2.5 py-1">
-        <nav aria-label="Right sidebar panels" className="flex min-w-0 items-center gap-1">
+        <nav aria-label={copy.rightSidebarPanels} className="flex min-w-0 items-center gap-1">
           {tabs.map(tab => (
             <Tip key={tab.id} label={tab.label}>
               <Button
@@ -214,10 +218,12 @@ function FilesystemTab({
   onRefresh,
   openState
 }: FilesystemTabProps) {
+  const copy = useAppCopy().rightSidebar
+
   return (
     <div className="group/project-header flex min-h-0 flex-1 flex-col">
       <RightSidebarSectionHeader>
-        <Tip label={hasCwd ? `${cwd} — click to change folder` : 'Open a folder'}>
+        <Tip label={hasCwd ? `${cwd} - ${copy.changeWorkingDirectory}` : copy.openFolderTip}>
           <button
             className="flex min-w-0 flex-1 items-center rounded-md text-left hover:text-(--ui-text-secondary)"
             onClick={() => void onChangeFolder()}
@@ -227,7 +233,7 @@ function FilesystemTab({
           </button>
         </Tip>
         <Button
-          aria-label="Refresh tree"
+          aria-label={copy.refreshTree}
           className={HEADER_ACTION_CLASS}
           disabled={!hasCwd || loading}
           onClick={onRefresh}
@@ -237,7 +243,7 @@ function FilesystemTab({
           <Codicon name="refresh" size="0.8125rem" spinning={loading} />
         </Button>
         <Button
-          aria-label="Open folder"
+          aria-label={copy.openFolder}
           className={HEADER_ACTION_CLASS}
           onClick={() => void onChangeFolder()}
           size="icon-xs"
@@ -246,7 +252,7 @@ function FilesystemTab({
           <Codicon name="folder-opened" size="0.8125rem" />
         </Button>
         <Button
-          aria-label="Collapse all folders"
+          aria-label={copy.collapseAllFolders}
           className={HEADER_ACTION_REVEAL_CLASS}
           disabled={!hasCwd || !canCollapse}
           onClick={onCollapseAll}
@@ -304,12 +310,14 @@ function FileTreeBody({
   onPreviewFile,
   openState
 }: FileTreeBodyProps) {
+  const copy = useAppCopy().rightSidebar
+
   if (!cwd) {
-    return <EmptyState body="Set a working directory from the status bar to browse files." title="No project" />
+    return <EmptyState body={copy.noProjectBody} title={copy.noProject} />
   }
 
   if (error) {
-    return <EmptyState body={`Could not read this folder (${error}).`} title="Unreadable" />
+    return <EmptyState body={copy.unreadableBody(error)} title={copy.unreadable} />
   }
 
   if (loading && data.length === 0) {
@@ -317,20 +325,20 @@ function FileTreeBody({
   }
 
   if (data.length === 0) {
-    return <EmptyState body="This folder is empty." title="Empty" />
+    return <EmptyState body={copy.emptyBody} title={copy.empty} />
   }
 
   return (
     <ErrorBoundary
       fallback={({ reset }) => (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-4 text-center">
-          <EmptyState body="The file tree hit an error rendering this folder." title="Tree error" />
+          <EmptyState body={copy.treeErrorBody} title={copy.treeError} />
           <button
             className="text-[0.68rem] font-medium text-muted-foreground transition hover:text-foreground"
             onClick={reset}
             type="button"
           >
-            Try again
+            {copy.tryAgain}
           </button>
         </div>
       )}
@@ -353,8 +361,10 @@ function FileTreeBody({
 }
 
 function FileTreeLoadingState() {
+  const copy = useAppCopy().rightSidebar
+
   return (
-    <div aria-label="Loading file tree" className="grid min-h-0 flex-1 place-items-center px-3" role="status">
+    <div aria-label={copy.loadingFileTree} className="grid min-h-0 flex-1 place-items-center px-3" role="status">
       <Loader
         aria-hidden="true"
         className="size-8 text-(--ui-text-tertiary)"

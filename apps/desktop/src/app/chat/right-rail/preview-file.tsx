@@ -12,6 +12,7 @@ import { Streamdown } from 'streamdown'
 
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { PageLoader } from '@/components/page-loader'
+import { useAppCopy } from '@/i18n'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
 
@@ -141,9 +142,9 @@ function filePathForTarget(target: PreviewTarget) {
   }
 }
 
-function formatBytes(bytes: number | undefined) {
+function formatBytes(bytes: number | undefined, unknownLabel: string) {
   if (!bytes) {
-    return 'unknown size'
+    return unknownLabel
   }
 
   const units = ['B', 'KB', 'MB', 'GB']
@@ -296,6 +297,8 @@ function MarkdownPreview({ text }: { text: string }) {
 }
 
 function PreviewToggle({ asSource, onToggle }: { asSource: boolean; onToggle: () => void }) {
+  const copy = useAppCopy().chat
+
   return (
     <div className="sticky top-0 z-10 flex justify-end border-b border-border/40 bg-transparent px-3 py-1 backdrop-blur">
       <button
@@ -303,7 +306,7 @@ function PreviewToggle({ asSource, onToggle }: { asSource: boolean; onToggle: ()
         onClick={onToggle}
         type="button"
       >
-        {asSource ? 'PREVIEW' : 'SOURCE'}
+        {asSource ? copy.previewToggle : copy.source}
       </button>
     </div>
   )
@@ -330,6 +333,7 @@ function startLineDrag(event: ReactDragEvent<HTMLElement>, filePath: string, { e
 }
 
 function SourceView({ filePath, language, text }: { filePath: string; language: string; text: string }) {
+  const copy = useAppCopy().chat
   const lineCount = useMemo(() => Math.max(1, text.split('\n').length), [text])
   const [selection, setSelection] = useState<LineSelection | null>(null)
   const inSelection = (line: number) => selection != null && line >= selection.start && line <= selection.end
@@ -373,7 +377,7 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
               key={line}
               onClick={event => handleLineClick(event, line)}
               onDragStart={event => handleDragStart(event, line)}
-              title="Click to select · shift-click to extend · drag to composer"
+              title={copy.lineSelectHint}
             >
               {line}
             </div>
@@ -408,6 +412,7 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
 }
 
 export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; target: PreviewTarget }) {
+  const copy = useAppCopy().chat
   const [state, setState] = useState<LocalPreviewState>({ loading: true })
   const [forcePreview, setForcePreview] = useState(false)
   const [renderMarkdownAsSource, setRenderMarkdownAsSource] = useState(false)
@@ -482,11 +487,11 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   }, [blockedByTarget, filePath, forcePreview, isImage, isText, reloadKey, target.language])
 
   if (state.loading) {
-    return <PageLoader label="Loading preview" />
+    return <PageLoader label={copy.loadingPreview} />
   }
 
   if (state.error) {
-    return <PreviewEmptyState body={state.error} title="Preview unavailable" />
+    return <PreviewEmptyState body={state.error} title={copy.previewUnavailable} />
   }
 
   if (
@@ -501,11 +506,11 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
       <PreviewEmptyState
         body={
           binary
-            ? `Previewing ${target.label} may show unreadable text.`
-            : `${target.label} is ${formatBytes(size)}. Hermes will only show the first 512 KB.`
+            ? copy.binaryFileWarning(target.label)
+            : copy.largeFileWarning(target.label, formatBytes(size, copy.unknownSize))
         }
-        primaryAction={{ label: 'Preview anyway', onClick: () => setForcePreview(true) }}
-        title={binary ? 'This looks like a binary file' : 'This file is large'}
+        primaryAction={{ label: copy.previewAnyway, onClick: () => setForcePreview(true) }}
+        title={binary ? copy.binaryFileTitle : copy.largeFileTitle}
         tone="warning"
       />
     )
@@ -532,7 +537,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
       <div className="h-full overflow-auto bg-transparent">
         {state.truncated && (
           <div className="border-b border-border/60 bg-muted/35 px-3 py-1.5 text-[0.68rem] text-muted-foreground">
-            Showing first 512 KB.
+            {copy.showingFirst512Kb}
           </div>
         )}
         {isMarkdown && <PreviewToggle asSource={!showRendered} onToggle={() => setRenderMarkdownAsSource(s => !s)} />}
@@ -547,8 +552,8 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
   return (
     <PreviewEmptyState
-      body={`${target.mimeType || 'This file type'} can still be attached as context.`}
-      title="No inline preview"
+      body={copy.fileTypeAttachable(target.mimeType || copy.fileTypeFallback)}
+      title={copy.noInlinePreview}
     />
   )
 }

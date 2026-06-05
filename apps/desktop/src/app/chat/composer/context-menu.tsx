@@ -11,29 +11,12 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { useAppCopy } from '@/i18n'
 import { Clipboard, FileText, FolderOpen, type IconComponent, ImageIcon, Link, MessageSquareText } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { GHOST_ICON_BTN } from './controls'
 import type { ChatBarState } from './types'
-
-const PROMPT_SNIPPETS: readonly PromptSnippet[] = [
-  {
-    description: 'Audit the current change for regressions, dropped edge cases, and missing tests.',
-    label: 'Code review',
-    text: 'Please review this for bugs, regressions, and missing tests.'
-  },
-  {
-    description: 'Outline an approach before touching code so the diff stays focused.',
-    label: 'Implementation plan',
-    text: 'Please make a concise implementation plan before changing code.'
-  },
-  {
-    description: 'Walk through how the selected code works and link to the key files.',
-    label: 'Explain this',
-    text: 'Please explain how this works and point me to the key files.'
-  }
-]
 
 export function ContextMenu({
   state,
@@ -44,11 +27,30 @@ export function ContextMenu({
   onPickFolders,
   onPickImages
 }: ContextMenuProps) {
+  const copy = useAppCopy()
   // Prompt snippets used to be a Radix submenu. That submenu didn't open
   // reliably when the parent menu was positioned at the bottom of the
   // window (composer "+" anchor), so we promoted it to a real Dialog —
   // easier to grow with search / descriptions, and no positioning math.
   const [snippetsOpen, setSnippetsOpen] = useState(false)
+
+  const snippets: readonly PromptSnippet[] = [
+    {
+      description: copy.chat.codeReviewDescription,
+      label: copy.chat.codeReviewLabel,
+      text: copy.chat.codeReviewPrompt
+    },
+    {
+      description: copy.chat.implementationPlanDescription,
+      label: copy.chat.implementationPlanLabel,
+      text: copy.chat.implementationPlanPrompt
+    },
+    {
+      description: copy.chat.explainDescription,
+      label: copy.chat.explainLabel,
+      text: copy.chat.explainPrompt
+    }
+  ]
 
   return (
     <>
@@ -71,35 +73,36 @@ export function ContextMenu({
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="w-60" side="top" sideOffset={10}>
           <DropdownMenuLabel className="text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground/85">
-            Attach
+            {copy.chat.attach}
           </DropdownMenuLabel>
           <ContextMenuItem disabled={!onPickFiles} icon={FileText} onSelect={onPickFiles}>
-            Files…
+            {copy.chat.files}
           </ContextMenuItem>
           <ContextMenuItem disabled={!onPickFolders} icon={FolderOpen} onSelect={onPickFolders}>
-            Folder…
+            {copy.chat.folder}
           </ContextMenuItem>
           <ContextMenuItem disabled={!onPickImages} icon={ImageIcon} onSelect={onPickImages}>
-            Images…
+            {copy.chat.images}
           </ContextMenuItem>
           <ContextMenuItem disabled={!onPasteClipboardImage} icon={Clipboard} onSelect={onPasteClipboardImage}>
-            Paste image
+            {copy.chat.pasteImage}
           </ContextMenuItem>
           <ContextMenuItem icon={Link} onSelect={onOpenUrlDialog}>
-            URL…
+            {copy.chat.url}
           </ContextMenuItem>
 
           <DropdownMenuSeparator />
 
           <ContextMenuItem icon={MessageSquareText} onSelect={() => setSnippetsOpen(true)}>
-            Prompt snippets…
+            {`${copy.chat.promptSnippets}...`}
           </ContextMenuItem>
 
           <DropdownMenuSeparator />
 
           <div className="px-2 py-1 text-[0.7rem] text-muted-foreground/80">
-            Tip: type <kbd className="rounded bg-muted/70 px-1 py-px font-mono text-[0.65rem]">@</kbd> to reference
-            files inline.
+            {copy.chat.typeAtReferenceTip}{' '}
+            <kbd className="rounded bg-muted/70 px-1 py-px font-mono text-[0.65rem]">@</kbd>{' '}
+            {copy.chat.typeAtReferenceSuffix}
           </div>
         </DropdownMenuContent>
       </DropdownMenu>
@@ -108,19 +111,21 @@ export function ContextMenu({
         onInsertText={onInsertText}
         onOpenChange={setSnippetsOpen}
         open={snippetsOpen}
-        snippets={PROMPT_SNIPPETS}
+        snippets={snippets}
       />
     </>
   )
 }
 
 function PromptSnippetsDialog({ onInsertText, onOpenChange, open, snippets }: PromptSnippetsDialogProps) {
+  const copy = useAppCopy()
+
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="max-w-md gap-3">
         <DialogHeader>
-          <DialogTitle>Prompt snippets</DialogTitle>
-          <DialogDescription>Pick a starter prompt to drop into the composer.</DialogDescription>
+          <DialogTitle>{copy.chat.promptSnippets}</DialogTitle>
+          <DialogDescription>{copy.chat.promptSnippetsDescription}</DialogDescription>
         </DialogHeader>
         <ul className="grid gap-1">
           {snippets.map(snippet => (

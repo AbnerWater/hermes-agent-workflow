@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import type { DesktopAuthProvider, DesktopConnectionProbeResult } from '@/global'
+import { useAppCopy } from '@/i18n'
 import { AlertCircle, Check, FileText, Globe, Loader2, LogIn, Monitor } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -75,6 +76,7 @@ function ModeCard({
 }
 
 export function GatewaySettings() {
+  const copy = useAppCopy().settings
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -364,24 +366,21 @@ export function GatewaySettings() {
 
       const message = `Connected to ${result.baseUrl}${result.version ? ` · Hermes ${result.version}` : ''}`
       setLastTest(message)
-      notify({ kind: 'success', title: 'Remote gateway reachable', message })
+      notify({ kind: 'success', title: copy.remoteGatewayReachable, message })
     } catch (err) {
-      notifyError(err, 'Remote gateway test failed')
+      notifyError(err, copy.remoteGatewayTestFailed)
     } finally {
       setTesting(false)
     }
   }
 
   if (loading) {
-    return <LoadingState label="Loading gateway settings..." />
+    return <LoadingState label={copy.loadingHermesConfiguration} />
   }
 
   if (!window.hermesDesktop?.getConnectionConfig) {
     return (
-      <EmptyState
-        description="The desktop IPC bridge does not expose gateway settings."
-        title="Gateway settings unavailable"
-      />
+      <EmptyState description={copy.gatewaySettingsUnavailableDescription} title={copy.gatewaySettingsUnavailable} />
     )
   }
 
@@ -390,12 +389,11 @@ export function GatewaySettings() {
       <div className="mb-5">
         <div className="flex items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium">
           <Globe className="size-4 text-muted-foreground" />
-          Gateway Connection
-          {state.envOverride ? <Pill tone="primary">env override</Pill> : null}
+          {copy.gatewayConnection}
+          {state.envOverride ? <Pill tone="primary">{copy.envOverride}</Pill> : null}
         </div>
         <p className="mt-2 max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-          Hermes Desktop starts its own local gateway by default. Use a remote gateway when you want this app to control
-          an already-running Hermes backend on another machine or behind a trusted proxy.
+          {copy.gatewayConnectionDescription}
         </p>
       </div>
 
@@ -403,11 +401,8 @@ export function GatewaySettings() {
         <div className="mb-5 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-[length:var(--conversation-caption-font-size)] text-destructive">
           <AlertCircle className="mt-0.5 size-4 shrink-0" />
           <div>
-            <div className="font-medium">Environment variables are controlling this desktop session.</div>
-            <div className="mt-1 leading-5">
-              Unset <code>HERMES_DESKTOP_REMOTE_URL</code> and <code>HERMES_DESKTOP_REMOTE_TOKEN</code> to use the saved
-              setting below.
-            </div>
+            <div className="font-medium">{copy.envControlsDesktopSession}</div>
+            <div className="mt-1 leading-5">{copy.envControlsDesktopSessionDescription}</div>
           </div>
         </div>
       ) : null}
@@ -415,19 +410,19 @@ export function GatewaySettings() {
       <div className="grid gap-3 sm:grid-cols-2">
         <ModeCard
           active={state.mode === 'local'}
-          description="Start a private Hermes backend on localhost. This is the default and works offline."
+          description={copy.localGatewayDescription}
           disabled={state.envOverride}
           icon={Monitor}
           onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
-          title="Local gateway"
+          title={copy.localGateway}
         />
         <ModeCard
           active={state.mode === 'remote'}
-          description="Connect this desktop shell to a remote Hermes backend. Hosted gateways use OAuth or a username and password; self-hosted ones may use a session token."
+          description={copy.remoteGatewayDescription}
           disabled={state.envOverride}
           icon={Globe}
           onSelect={() => setState(current => ({ ...current, mode: 'remote' }))}
-          title="Remote gateway"
+          title={copy.remoteGateway}
         />
       </div>
 
@@ -442,21 +437,21 @@ export function GatewaySettings() {
               value={state.remoteUrl}
             />
           }
-          description="Base URL for the remote dashboard backend. Path prefixes are supported, for example /hermes."
-          title="Remote URL"
+          description={copy.remoteUrlDescription}
+          title={copy.remoteUrl}
         />
 
         {state.mode === 'remote' && probeStatus === 'probing' ? (
           <div className="flex items-center gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
             <Loader2 className="size-4 animate-spin" />
-            Checking how this gateway authenticates…
+            {copy.checkingGatewayAuth}
           </div>
         ) : null}
 
         {state.mode === 'remote' && probeStatus === 'error' ? (
           <div className="flex items-start gap-2 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
             <AlertCircle className="mt-0.5 size-4 shrink-0" />
-            Could not reach this gateway yet. Check the URL — the auth method will appear once it responds.
+            {copy.couldNotReachGatewayAuth}
           </div>
         ) : null}
 
@@ -467,30 +462,30 @@ export function GatewaySettings() {
               oauthConnected ? (
                 <div className="flex items-center gap-2">
                   <Pill tone="primary">
-                    <Check className="size-3" /> Signed in
+                    <Check className="size-3" /> {copy.signedIn}
                   </Pill>
                   <Button disabled={signingIn || state.envOverride} onClick={() => void signOut()} variant="outline">
                     {signingIn ? <Loader2 className="size-4 animate-spin" /> : null}
-                    Sign out
+                    {copy.signOut}
                   </Button>
                 </div>
               ) : (
                 <Button disabled={signingIn || state.envOverride || !trimmedUrl} onClick={() => void signIn()}>
                   {signingIn ? <Loader2 className="size-4 animate-spin" /> : <LogIn className="size-4" />}
-                  {isPasswordProvider ? 'Sign in' : `Sign in with ${providerLabel}`}
+                  {isPasswordProvider ? copy.signIn : copy.signInWith(providerLabel)}
                 </Button>
               )
             }
             description={
               oauthConnected
                 ? isPasswordProvider
-                  ? 'This gateway uses a username and password. You are signed in; the session refreshes automatically.'
-                  : 'This gateway uses OAuth. You are signed in; the session refreshes automatically.'
+                  ? copy.authPasswordConnected
+                  : copy.authOauthConnected
                 : isPasswordProvider
-                  ? 'This gateway uses a username and password. Sign in to authorize this desktop app.'
-                  : `This gateway uses OAuth. Sign in with ${providerLabel} to authorize this desktop app.`
+                  ? copy.authPasswordPrompt
+                  : copy.authOauthPrompt(providerLabel)
             }
-            title="Authentication"
+            title={copy.authentication}
           />
         ) : null}
 
@@ -504,14 +499,16 @@ export function GatewaySettings() {
                 disabled={state.envOverride}
                 onChange={event => setRemoteToken(event.target.value)}
                 placeholder={
-                  state.remoteTokenSet ? `Existing token ${state.remoteTokenPreview ?? 'saved'}` : 'Paste session token'
+                  state.remoteTokenSet
+                    ? copy.existingToken(state.remoteTokenPreview ?? copy.saved)
+                    : copy.pasteSessionToken
                 }
                 type="password"
                 value={remoteToken}
               />
             }
-            description="The dashboard session token used for REST and WebSocket access. Leave blank to keep the saved token."
-            title="Session token"
+            description={copy.sessionTokenDescription}
+            title={copy.sessionToken}
           />
         ) : null}
       </div>
@@ -527,14 +524,14 @@ export function GatewaySettings() {
           variant="text"
         >
           {testing ? <Loader2 className="size-4 animate-spin" /> : null}
-          Test remote
+          {copy.testRemote}
         </Button>
         <Button disabled={state.envOverride || saving} onClick={() => void save(false)} size="sm" variant="textStrong">
-          Save for next restart
+          {copy.saveNextRestart}
         </Button>
         <Button disabled={state.envOverride || saving} onClick={() => void save(true)} size="sm">
           {saving ? <Loader2 className="size-4 animate-spin" /> : null}
-          Save and reconnect
+          {copy.saveReconnect}
         </Button>
       </div>
 
@@ -543,11 +540,11 @@ export function GatewaySettings() {
           action={
             <Button onClick={() => void window.hermesDesktop?.revealLogs()} size="sm" variant="textStrong">
               <FileText className="size-4" />
-              Open logs
+              {copy.openLogs}
             </Button>
           }
-          description="Reveal desktop.log in your file manager — useful when the gateway fails to start."
-          title="Diagnostics"
+          description={copy.diagnosticsDescription}
+          title={copy.diagnostics}
         />
       </div>
     </SettingsContent>

@@ -1,5 +1,6 @@
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { deleteProfile } from '@/hermes'
+import { useAppCopy } from '@/i18n'
 import { $activeGatewayProfile, normalizeProfileKey, selectProfile, setActiveProfile } from '@/store/profile'
 
 // Thin wrapper over ConfirmDialog: owns the deleteProfile call, inherits
@@ -16,20 +17,16 @@ export function DeleteProfileDialog({
   onDeleted?: () => Promise<void> | void
   open: boolean
 }) {
+  const appCopy = useAppCopy()
+  const copy = appCopy.profiles
+
   return (
     <ConfirmDialog
-      busyLabel="Deleting…"
-      confirmLabel="Delete"
-      description={
-        profile ? (
-          <>
-            This will delete <span className="font-medium text-foreground">{profile.name}</span> and remove its{' '}
-            <span className="font-mono text-xs">{profile.path}</span> directory. This cannot be undone.
-          </>
-        ) : null
-      }
+      busyLabel={copy.deleting}
+      confirmLabel={appCopy.common.delete}
+      description={profile ? copy.deleteDescription(profile.name, profile.path) : null}
       destructive
-      doneLabel="Deleted"
+      doneLabel={copy.deleted}
       onClose={onClose}
       onConfirm={async () => {
         if (!profile) {
@@ -52,7 +49,7 @@ export function DeleteProfileDialog({
         }
       }}
       open={open}
-      title="Delete profile?"
+      title={copy.deleteTitle}
     />
   )
 }

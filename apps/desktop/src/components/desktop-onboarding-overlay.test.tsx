@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { setAppLanguage } from '@/store/app-language'
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
 import type { OAuthProvider } from '@/types/hermes'
 
@@ -32,6 +33,10 @@ function setProviders(providers: OAuthProvider[]) {
 
 const ctx: OnboardingContext = { requestGateway: async () => undefined as never }
 
+beforeEach(() => {
+  setAppLanguage('en')
+})
+
 afterEach(() => {
   cleanup()
 
@@ -51,6 +56,7 @@ afterEach(() => {
     firstRunSkipped: false,
     manual: false
   })
+  setAppLanguage('zh')
 })
 
 describe('onboarding Picker', () => {

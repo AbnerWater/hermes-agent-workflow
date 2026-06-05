@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setAppLanguage } from '@/store/app-language'
 import type { ToolsetConfig } from '@/types/hermes'
 
 const getToolsetConfig = vi.fn()
@@ -54,6 +55,7 @@ function config(overrides: Partial<ToolsetConfig> = {}): ToolsetConfig {
 }
 
 beforeEach(() => {
+  setAppLanguage('en')
   getToolsetConfig.mockResolvedValue(config())
   selectToolsetProvider.mockResolvedValue({ ok: true, name: 'tts', provider: 'ElevenLabs' })
   setEnvVar.mockResolvedValue({ ok: true })
@@ -63,6 +65,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  setAppLanguage('zh')
 })
 
 describe('ToolsetConfigPanel', () => {
@@ -93,8 +96,10 @@ describe('ToolsetConfigPanel', () => {
     const elevenlabs = await screen.findByRole('button', { name: /ElevenLabs/ })
     fireEvent.click(elevenlabs)
 
-    // Click "Set" to reveal the input for the unset key.
-    fireEvent.click(await screen.findByRole('button', { name: 'Set' }))
+    // Open the env-var actions menu and click "Set" to reveal the input for the unset key.
+    const actions = await screen.findByRole('button', { name: 'Actions for ELEVENLABS_API_KEY' })
+    fireEvent.pointerDown(actions, { button: 0, ctrlKey: false })
+    fireEvent.click(await screen.findByText('Set'))
 
     const input = await screen.findByPlaceholderText('ElevenLabs API key')
     fireEvent.change(input, { target: { value: 'sk-test-123' } })

@@ -13,6 +13,7 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { useAppCopy } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { ChevronDown, Loader2 } from '@/lib/icons'
 import { $gateway } from '@/store/gateway'
@@ -52,6 +53,8 @@ export const PendingToolApproval: FC<{ part: ToolPart }> = ({ part }) => {
 const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
 
 const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
+  const appCopy = useAppCopy()
+  const copy = appCopy.assistant
   const gateway = useStore($gateway)
   const [submitting, setSubmitting] = useState<ApprovalChoice | null>(null)
   // "Always allow" persists the pattern to ~/.hermes/config.yaml permanently, so
@@ -68,7 +71,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
       }
 
       if (!gateway) {
-        notifyError(new Error('Hermes gateway is not connected'), 'Could not send approval response')
+        notifyError(new Error(copy.approvalGatewayDisconnected), copy.couldNotSendApprovalResponse)
 
         return
       }
@@ -83,11 +86,11 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
         triggerHaptic(choice === 'deny' ? 'cancel' : 'submit')
         clearApprovalRequest(request.sessionId)
       } catch (error) {
-        notifyError(error, 'Could not send approval response')
+        notifyError(error, copy.couldNotSendApprovalResponse)
         setSubmitting(null)
       }
     },
-    [busy, gateway, request.sessionId]
+    [busy, copy.approvalGatewayDisconnected, copy.couldNotSendApprovalResponse, gateway, request.sessionId]
   )
 
   // ⌘/Ctrl+Enter → Run, Esc → Reject.
@@ -123,14 +126,14 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
           size="xs"
           variant="ghost"
         >
-          {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : 'Run'}
+          {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : copy.approvalRun}
           {submitting !== 'once' && <span className="text-[0.625rem] text-primary/60">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>}
         </Button>
         <span aria-hidden className="w-px self-stretch bg-primary/20" />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button
-              aria-label="More approval options"
+              aria-label={copy.approvalMoreOptions}
               className="h-full w-5 rounded-none px-0 text-primary hover:bg-primary/15 hover:text-primary"
               disabled={busy}
               size="xs"
@@ -140,7 +143,9 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="min-w-44">
-            <DropdownMenuItem onSelect={() => void respond('session')}>Allow this session</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => void respond('session')}>
+              {copy.approvalAllowThisSession}
+            </DropdownMenuItem>
             <DropdownMenuItem
               onSelect={() => {
                 // Defer one tick so the menu fully unmounts before the dialog
@@ -149,10 +154,10 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
                 setTimeout(() => setConfirmAlways(true), 0)
               }}
             >
-              Always allow…
+              {copy.approvalAlwaysAllowMenu}
             </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => void respond('deny')} variant="destructive">
-              Reject
+              {copy.approvalReject}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -165,19 +170,15 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
         size="xs"
         variant="ghost"
       >
-        {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : 'Reject'}
+        {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : copy.approvalReject}
         {submitting !== 'deny' && <span className="text-[0.625rem] opacity-55">Esc</span>}
       </Button>
 
       <Dialog onOpenChange={setConfirmAlways} open={confirmAlways}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle>Always allow this command?</DialogTitle>
-            <DialogDescription>
-              This adds the “{request.description}” pattern to your permanent allowlist (
-              <code className="font-mono text-xs">~/.hermes/config.yaml</code>). Hermes won’t ask again for commands
-              like this — in this session or any future one.
-            </DialogDescription>
+            <DialogTitle>{copy.approvalAlwaysAllowTitle}</DialogTitle>
+            <DialogDescription>{copy.approvalAlwaysAllowDescription(request.description)}</DialogDescription>
           </DialogHeader>
 
           {request.command.trim() && (
@@ -188,7 +189,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
 
           <DialogFooter>
             <Button onClick={() => setConfirmAlways(false)} size="sm" variant="ghost">
-              Cancel
+              {appCopy.common.cancel}
             </Button>
             <Button
               onClick={() => {
@@ -198,7 +199,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
               size="sm"
               variant="destructive"
             >
-              Always allow
+              {copy.approvalAlwaysAllow}
             </Button>
           </DialogFooter>
         </DialogContent>

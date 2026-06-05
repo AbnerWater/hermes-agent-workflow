@@ -4,6 +4,7 @@ import { useLocation, useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { useAppCopy } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
@@ -44,6 +45,7 @@ interface TitlebarControlsProps extends ComponentProps<'div'> {
 }
 
 export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }: TitlebarControlsProps) {
+  const copy = useAppCopy()
   const navigate = useNavigate()
   const location = useLocation()
   const hapticsMuted = useStore($hapticsMuted)
@@ -76,7 +78,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     {
       icon: <Codicon name="layout-sidebar-left" />,
       id: 'sidebar',
-      label: `${leftEdge.open ? 'Hide' : 'Show'} left sidebar`,
+      label: leftEdge.open ? copy.shell.hideLeftSidebar : copy.shell.showLeftSidebar,
       onSelect: () => {
         triggerHaptic('tap')
         leftEdge.toggle()
@@ -85,12 +87,12 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     {
       icon: <Codicon name="arrow-swap" />,
       id: 'flip-panes',
-      label: 'Swap sidebar sides',
+      label: copy.shell.swapSidebarSides,
       onSelect: () => {
         triggerHaptic('tap')
         togglePanesFlipped()
       },
-      title: 'Swap the sessions and file browser sides'
+      title: copy.shell.swapSidebarSidesTitle
     },
     ...leftTools
   ]
@@ -98,7 +100,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const rightSidebarTool: TitlebarTool = {
     icon: <Codicon name="layout-sidebar-right" />,
     id: 'right-sidebar',
-    label: `${rightEdge.open ? 'Hide' : 'Show'} right sidebar`,
+    label: rightEdge.open ? copy.shell.hideRightSidebar : copy.shell.showRightSidebar,
     onSelect: () => {
       triggerHaptic('tap')
       rightEdge.toggle()
@@ -111,13 +113,13 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       active: hapticsMuted,
       icon: <Codicon name={hapticsMuted ? 'mute' : 'unmute'} />,
       id: 'haptics',
-      label: hapticsMuted ? 'Unmute haptics' : 'Mute haptics',
+      label: hapticsMuted ? copy.shell.unmuteHaptics : copy.shell.muteHaptics,
       onSelect: toggleHaptics
     },
     {
       icon: <Codicon name="settings-gear" />,
       id: 'settings',
-      label: 'Open settings',
+      label: copy.common.openSettings,
       onSelect: () => {
         triggerHaptic('open')
         onOpenSettings()
@@ -141,7 +143,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   return (
     <>
       <div
-        aria-label="Window controls"
+        aria-label={copy.shell.windowControls}
         className="fixed left-(--titlebar-controls-left) top-(--titlebar-controls-top) z-70 flex translate-y-0.5 flex-row items-center gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
       >
         {leftToolbarTools
@@ -161,7 +163,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       */}
       {visiblePaneTools.length > 0 && (
         <div
-          aria-label="Pane controls"
+          aria-label={copy.shell.paneControls}
           className="fixed top-(--titlebar-controls-top) right-[calc(var(--titlebar-tools-right)+var(--shell-preview-toolbar-gap,0))] z-70 flex flex-row items-center gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
         >
           {visiblePaneTools.map(tool => (
@@ -171,7 +173,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       )}
 
       <div
-        aria-label="App controls"
+        aria-label={copy.shell.appControls}
         className="fixed right-(--titlebar-tools-right) top-(--titlebar-controls-top) z-70 flex flex-row items-center justify-end gap-x-1 pointer-events-auto select-none [-webkit-app-region:no-drag]"
       >
         {visibleSystemToolsBeforeSettings.map(tool => (

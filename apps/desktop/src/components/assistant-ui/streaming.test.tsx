@@ -1,7 +1,9 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect, useState } from 'react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { setAppLanguage } from '@/store/app-language'
 
 import { Thread } from './thread'
 
@@ -377,7 +379,12 @@ function IntroHarness() {
 
 describe('assistant-ui streaming renderer', () => {
   beforeEach(() => {
+    setAppLanguage('en')
     resizeObservers.clear()
+  })
+
+  afterEach(() => {
+    setAppLanguage('zh')
   })
 
   it('renders assistant text incrementally before completion', async () => {
@@ -641,9 +648,6 @@ describe('assistant-ui streaming renderer', () => {
 
   it('renders an incomplete streaming reasoning fenced code block as a code card', async () => {
     const { container } = render(<RunningReasoningHarness />)
-    const ui = within(container)
-
-    fireEvent.click(ui.getByRole('button', { name: /thinking/i }))
 
     await waitFor(() => {
       expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy()

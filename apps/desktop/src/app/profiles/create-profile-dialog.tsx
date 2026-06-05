@@ -3,10 +3,18 @@ import { useEffect, useState } from 'react'
 import { ActionStatus } from '@/components/ui/action-status'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { createProfile, updateProfileSoul } from '@/hermes'
+import { useAppCopy } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
@@ -31,6 +39,8 @@ export function CreateProfileDialog({
   onCreated?: (name: string) => Promise<void> | void
   open: boolean
 }) {
+  const appCopy = useAppCopy()
+  const copy = appCopy.profiles
   const [name, setName] = useState('')
   const [cloneFromDefault, setCloneFromDefault] = useState(true)
   const [soul, setSoul] = useState('')
@@ -57,7 +67,7 @@ export function CreateProfileDialog({
     event.preventDefault()
 
     if (!trimmed || invalid) {
-      setError(invalid ? `Invalid name. ${PROFILE_NAME_HINT}` : 'Name is required.')
+      setError(invalid ? copy.invalidName(copy.nameHint) : copy.nameRequired)
 
       return
     }
@@ -77,7 +87,7 @@ export function CreateProfileDialog({
       window.setTimeout(onClose, 800)
     } catch (err) {
       setStatus('idle')
-      setError(err instanceof Error ? err.message : 'Failed to create profile')
+      setError(err instanceof Error ? err.message : copy.failedCreate)
     }
   }
 
@@ -85,16 +95,14 @@ export function CreateProfileDialog({
     <Dialog onOpenChange={value => !value && !busy && onClose()} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>New profile</DialogTitle>
-          <DialogDescription>
-            Profiles are independent Hermes environments: separate config, skills, and SOUL.md.
-          </DialogDescription>
+          <DialogTitle>{copy.createTitle}</DialogTitle>
+          <DialogDescription>{copy.createDescription}</DialogDescription>
         </DialogHeader>
 
         <form className="grid gap-4" onSubmit={handleSubmit}>
           <div className="grid gap-1.5">
             <label className="text-xs font-medium" htmlFor="new-profile-name">
-              Name
+              {copy.name}
             </label>
             <Input
               aria-invalid={invalid}
@@ -105,7 +113,7 @@ export function CreateProfileDialog({
               value={name}
             />
             <p className={cn('text-[0.66rem] leading-4', invalid ? 'text-destructive' : 'text-muted-foreground')}>
-              {PROFILE_NAME_HINT}
+              {copy.nameHint}
             </p>
           </div>
 
@@ -116,22 +124,20 @@ export function CreateProfileDialog({
               onCheckedChange={checked => setCloneFromDefault(checked === true)}
             />
             <span className="grid gap-0.5 leading-snug">
-              <span className="text-sm font-medium">Clone from default</span>
-              <span className="text-xs text-muted-foreground">
-                Copy config, skills, and SOUL.md from your default profile.
-              </span>
+              <span className="text-sm font-medium">{copy.cloneFromDefault}</span>
+              <span className="text-xs text-muted-foreground">{copy.cloneDescription}</span>
             </span>
           </label>
 
           <div className="grid gap-1.5">
             <label className="text-xs font-medium" htmlFor="new-profile-soul">
-              SOUL.md <span className="font-normal text-muted-foreground">— optional</span>
+              SOUL.md <span className="font-normal text-muted-foreground">- {copy.optional}</span>
             </label>
             <Textarea
               className="min-h-28 font-mono text-xs leading-5"
               id="new-profile-soul"
               onChange={event => setSoul(event.target.value)}
-              placeholder={`The system prompt / persona for this profile.\nLeave blank to keep the ${cloneFromDefault ? 'cloned' : 'empty'} default.`}
+              placeholder={copy.soulPlaceholder(cloneFromDefault ? 'cloned' : 'empty')}
               value={soul}
             />
           </div>
@@ -145,10 +151,10 @@ export function CreateProfileDialog({
 
           <DialogFooter>
             <Button disabled={busy} onClick={onClose} type="button" variant="ghost">
-              Cancel
+              {appCopy.common.cancel}
             </Button>
             <Button disabled={busy || !trimmed || invalid} type="submit">
-              <ActionStatus busy="Creating…" done="Created" idle="Create profile" state={status} />
+              <ActionStatus busy={copy.creating} done={copy.created} idle={copy.createProfile} state={status} />
             </Button>
           </DialogFooter>
         </form>

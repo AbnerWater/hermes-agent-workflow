@@ -16,6 +16,7 @@ import {
 import { Textarea } from '@/components/ui/textarea'
 import { Tip } from '@/components/ui/tooltip'
 import { createProfile, getProfiles, getProfileSoul, type ProfileInfo, updateProfileSoul } from '@/hermes'
+import { useAppCopy } from '@/i18n'
 import { AlertTriangle, Save, Users } from '@/lib/icons'
 import { profileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
@@ -57,6 +58,7 @@ interface ProfilesViewProps {
 }
 
 export function ProfilesView({ onClose }: ProfilesViewProps) {
+  const copy = useAppCopy().profiles
   const [profiles, setProfiles] = useState<null | ProfileInfo[]>(null)
   const [selectedName, setSelectedName] = useState<null | string>(null)
   const [createOpen, setCreateOpen] = useState(false)
@@ -77,10 +79,10 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
         return list.find(p => p.is_default)?.name ?? list[0]?.name ?? null
       })
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : 'Failed to load profiles')
+      setLoadError(err instanceof Error ? err.message : copy.failedLoadProfiles)
       setProfiles(prev => prev ?? [])
     }
-  }, [])
+  }, [copy.failedLoadProfiles])
 
   useRefreshHotkey(refresh)
 
@@ -106,35 +108,38 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
         setSelectedName(target)
         await refresh()
       } catch (err) {
-        setLoadError(err instanceof Error ? err.message : `Failed to duplicate ${source.name}`)
+        setLoadError(err instanceof Error ? err.message : copy.failedDuplicate(source.name))
       }
     },
-    [profiles, refresh]
+    [copy, profiles, refresh]
   )
 
-  const handleMakeDefault = useCallback(async (profile: ProfileInfo) => {
-    try {
-      // Relaunches the backend under this profile's HERMES_HOME and reloads the
-      // window, so control normally doesn't return here.
-      await switchProfile(profile.name)
-    } catch (err) {
-      setLoadError(err instanceof Error ? err.message : `Failed to switch to ${profile.name}`)
-    }
-  }, [])
+  const handleMakeDefault = useCallback(
+    async (profile: ProfileInfo) => {
+      try {
+        // Relaunches the backend under this profile's HERMES_HOME and reloads the
+        // window, so control normally doesn't return here.
+        await switchProfile(profile.name)
+      } catch (err) {
+        setLoadError(err instanceof Error ? err.message : copy.failedSwitch(profile.name))
+      }
+    },
+    [copy]
+  )
 
   return (
-    <OverlayView closeLabel="Close profiles" onClose={onClose}>
+    <OverlayView closeLabel={copy.closeProfiles} onClose={onClose}>
       {!profiles ? (
-        <PageLoader label="Loading profiles..." />
+        <PageLoader label={copy.loadingProfiles} />
       ) : (
         <OverlaySplitLayout>
           <OverlaySidebar>
             <div className="mb-1 flex items-center justify-between gap-2 pl-1.5 pr-0.5">
               <span className="text-[0.7rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)">
-                Profiles
+                {copy.profiles}
               </span>
               <Button
-                aria-label="New profile"
+                aria-label={copy.newProfile}
                 className="text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
                 onClick={() => setCreateOpen(true)}
                 size="icon-xs"
@@ -161,7 +166,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
                 profile={profile}
               />
             ))}
-            {profiles.length === 0 && <p className="px-1.5 py-3 text-xs text-muted-foreground">No profiles yet.</p>}
+            {profiles.length === 0 && <p className="px-1.5 py-3 text-xs text-muted-foreground">{copy.noProfilesYet}</p>}
           </OverlaySidebar>
 
           <OverlayMain className="px-0">
@@ -171,7 +176,7 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
               <div className="grid h-full place-items-center px-6 py-12 text-center text-sm text-muted-foreground">
                 <div>
                   <Users className="mx-auto size-6 text-muted-foreground/60" />
-                  <p className="mt-3">Select a profile to view its details.</p>
+                  <p className="mt-3">{copy.selectProfileDetails}</p>
                 </div>
               </div>
             )}
@@ -228,6 +233,8 @@ function ProfileRow({
   onSelect: () => void
   profile: ProfileInfo
 }) {
+  const appCopy = useAppCopy()
+  const copy = appCopy.profiles
   const running = useStore($activeProfile)
   const isRunning = profile.name === running
 
@@ -258,14 +265,14 @@ function ProfileRow({
           )}
           <span className="truncate text-sm font-medium">{profile.name}</span>
           {isRunning && (
-            <Tip label="Current default profile">
+            <Tip label={copy.currentDefaultProfile}>
               <Codicon className="shrink-0 text-(--ui-accent)" name="pass-filled" size="0.75rem" />
             </Tip>
           )}
         </span>
         <span className="text-[0.66rem] text-muted-foreground">
-          {isRunning ? 'default · ' : ''}
-          {profile.skill_count} {profile.skill_count === 1 ? 'skill' : 'skills'}
+          {isRunning ? copy.defaultSkillPrefix : ''}
+          {copy.skillCount(profile.skill_count)}
         </span>
       </button>
 
@@ -278,10 +285,10 @@ function ProfileRow({
         profile={profile}
       >
         <Button
-          aria-label={`Actions for ${profile.name}`}
+          aria-label={appCopy.sidebar.actionsFor(profile.name)}
           className="absolute right-1 top-1 size-6 bg-transparent text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100"
           size="icon-xs"
-          title="Profile actions"
+          title={copy.profileActions}
           variant="ghost"
         >
           <Codicon name="ellipsis" size="0.875rem" />
@@ -308,24 +315,32 @@ function ProfileActionsMenu({
   onRename: () => void
   profile: ProfileInfo
 }) {
+  const appCopy = useAppCopy()
+  const copy = appCopy.profiles
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
-      <DropdownMenuContent align="end" aria-label={`Actions for ${profile.name}`} className="w-44" sideOffset={6}>
+      <DropdownMenuContent
+        align="end"
+        aria-label={appCopy.sidebar.actionsFor(profile.name)}
+        className="w-44"
+        sideOffset={6}
+      >
         <DropdownMenuItem disabled={isRunning} onSelect={onMakeDefault}>
           <Codicon name="pass" size="0.875rem" />
-          <span>{isRunning ? 'Current default' : 'Make default'}</span>
+          <span>{isRunning ? copy.currentDefault : copy.makeDefault}</span>
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         {!profile.is_default && (
           <DropdownMenuItem onSelect={onRename}>
             <Codicon name="edit" size="0.875rem" />
-            <span>Rename</span>
+            <span>{appCopy.common.rename}</span>
           </DropdownMenuItem>
         )}
         <DropdownMenuItem onSelect={onClone}>
           <Codicon name="copy" size="0.875rem" />
-          <span>Duplicate</span>
+          <span>{copy.duplicate}</span>
         </DropdownMenuItem>
         {!profile.is_default && (
           <DropdownMenuItem
@@ -334,7 +349,7 @@ function ProfileActionsMenu({
             variant="destructive"
           >
             <Codicon name="trash" size="0.875rem" />
-            <span>Delete</span>
+            <span>{appCopy.common.delete}</span>
           </DropdownMenuItem>
         )}
       </DropdownMenuContent>
@@ -343,6 +358,8 @@ function ProfileActionsMenu({
 }
 
 function ProfileDetail({ profile }: { profile: ProfileInfo }) {
+  const copy = useAppCopy().profiles
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -351,7 +368,7 @@ function ProfileDetail({ profile }: { profile: ProfileInfo }) {
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="text-xl font-semibold tracking-tight">{profile.name}</h3>
-                {profile.is_default && <Badge>Default</Badge>}
+                {profile.is_default && <Badge>{copy.defaultBadge}</Badge>}
               </div>
               <Tip label={profile.path}>
                 <p className="mt-1 font-mono text-[0.7rem] text-muted-foreground">{profile.path}</p>
@@ -359,17 +376,17 @@ function ProfileDetail({ profile }: { profile: ProfileInfo }) {
             </div>
 
             <dl className="grid gap-2 text-xs sm:grid-cols-2">
-              <DetailRow label="Model">
+              <DetailRow label={copy.model}>
                 {profile.model ? (
                   <>
                     <span className="font-mono">{profile.model}</span>
                     {profile.provider && <span className="text-muted-foreground"> · {profile.provider}</span>}
                   </>
                 ) : (
-                  <span className="text-muted-foreground">Not set</span>
+                  <span className="text-muted-foreground">{copy.notSet}</span>
                 )}
               </DetailRow>
-              <DetailRow label="Skills">{profile.skill_count}</DetailRow>
+              <DetailRow label={copy.skills}>{profile.skill_count}</DetailRow>
             </dl>
           </header>
 
@@ -390,6 +407,7 @@ function DetailRow({ children, label }: { children: React.ReactNode; label: stri
 }
 
 function SoulEditor({ profileName }: { profileName: string }) {
+  const copy = useAppCopy().profiles
   const [content, setContent] = useState('')
   const [original, setOriginal] = useState('')
   const [loading, setLoading] = useState(true)
@@ -416,7 +434,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
         }
       } catch (err) {
         if (requestRef.current === profileName) {
-          setError(err instanceof Error ? err.message : 'Failed to load SOUL.md')
+          setError(err instanceof Error ? err.message : copy.failedLoadSoul)
         }
       } finally {
         if (requestRef.current === profileName) {
@@ -424,7 +442,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
         }
       }
     })()
-  }, [profileName])
+  }, [copy.failedLoadSoul, profileName])
 
   useEffect(
     () => () => {
@@ -456,7 +474,7 @@ function SoulEditor({ profileName }: { profileName: string }) {
       }, 2200)
     } catch (err) {
       setStatus('idle')
-      setError(err instanceof Error ? err.message : 'Failed to save SOUL.md')
+      setError(err instanceof Error ? err.message : copy.failedSaveSoul)
     }
   }
 
@@ -465,20 +483,18 @@ function SoulEditor({ profileName }: { profileName: string }) {
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
           <h4 className="text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground">SOUL.md</h4>
-          <p className="text-xs text-muted-foreground">
-            The system prompt and persona instructions baked into this profile.
-          </p>
+          <p className="text-xs text-muted-foreground">{copy.soulDescription}</p>
         </div>
-        {dirty && <span className="text-[0.65rem] text-muted-foreground">Unsaved changes</span>}
+        {dirty && <span className="text-[0.65rem] text-muted-foreground">{copy.unsavedChanges}</span>}
       </div>
 
       {loading ? (
-        <PageLoader className="min-h-44" label="Loading SOUL.md" />
+        <PageLoader className="min-h-44" label={copy.loadingSoul} />
       ) : (
         <Textarea
           className="min-h-72 font-mono text-xs leading-5"
           onChange={event => setContent(event.target.value)}
-          placeholder={isEmpty ? 'Empty SOUL.md — start writing the persona...' : undefined}
+          placeholder={isEmpty ? copy.emptySoulPlaceholder : undefined}
           value={content}
         />
       )}
@@ -493,9 +509,9 @@ function SoulEditor({ profileName }: { profileName: string }) {
       <div className="flex justify-end">
         <Button disabled={loading || saving || !dirty} onClick={() => void handleSave()} size="sm">
           <ActionStatus
-            busy="Saving…"
-            done="Saved"
-            idle="Save SOUL.md"
+            busy={copy.saving}
+            done={copy.saved}
+            idle={copy.saveSoul}
             idleIcon={<Save />}
             state={saving ? 'saving' : status === 'saved' && !dirty ? 'done' : 'idle'}
           />
@@ -504,4 +520,3 @@ function SoulEditor({ profileName }: { profileName: string }) {
     </section>
   )
 }
-

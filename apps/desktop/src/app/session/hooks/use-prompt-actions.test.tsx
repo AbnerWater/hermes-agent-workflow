@@ -9,6 +9,8 @@ import type { SessionInfo } from '@/types/hermes'
 import { usePromptActions } from './use-prompt-actions'
 
 vi.mock('@/hermes', () => ({
+  getProfiles: vi.fn(async () => ({ profiles: [] })),
+  setApiRequestProfile: vi.fn(),
   transcribeAudio: vi.fn()
 }))
 
@@ -90,8 +92,9 @@ describe('usePromptActions /title', () => {
 
   it('renames via the session.title RPC (with the runtime id), updates the sidebar store, and refreshes', async () => {
     const refreshSessions = vi.fn(async () => undefined)
-    const requestGateway = vi.fn(async (method: string) =>
-      (method === 'session.title' ? { pending: false, title: 'New title' } : {}) as never
+
+    const requestGateway = vi.fn(
+      async (method: string) => (method === 'session.title' ? { pending: false, title: 'New title' } : {}) as never
     )
 
     let handle: HarnessHandle | null = null
@@ -113,8 +116,9 @@ describe('usePromptActions /title', () => {
 
   it('reports the queued state when the session row is not persisted yet', async () => {
     const refreshSessions = vi.fn(async () => undefined)
-    const requestGateway = vi.fn(async (method: string) =>
-      (method === 'session.title' ? { pending: true, title: 'Fresh chat' } : {}) as never
+
+    const requestGateway = vi.fn(
+      async (method: string) => (method === 'session.title' ? { pending: true, title: 'Fresh chat' } : {}) as never
     )
 
     let handle: HarnessHandle | null = null
@@ -146,6 +150,7 @@ describe('usePromptActions /title', () => {
 
   it('surfaces a rename error without touching the sidebar store', async () => {
     const refreshSessions = vi.fn(async () => undefined)
+
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.title') {
         throw new Error('Title too long')
@@ -159,7 +164,10 @@ describe('usePromptActions /title', () => {
 
     await handle!.submitText('/title way too long title')
 
-    expect(requestGateway).toHaveBeenCalledWith('session.title', expect.objectContaining({ title: 'way too long title' }))
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.title',
+      expect.objectContaining({ title: 'way too long title' })
+    )
     expect(refreshSessions).not.toHaveBeenCalled()
     expect($sessions.get()[0]?.title).toBe('Old title')
   })

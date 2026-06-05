@@ -2,6 +2,7 @@ import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime }
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setAppLanguage } from '@/store/app-language'
 import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
 import { $toolDisclosureStates } from '@/store/tool-view'
@@ -121,6 +122,7 @@ function GroupHarness({ message }: { message: ThreadMessage }) {
 }
 
 beforeEach(() => {
+  setAppLanguage('en')
   clearAllPrompts()
   $activeSessionId.set('sess-1')
   $toolDisclosureStates.set({})
@@ -130,6 +132,7 @@ afterEach(() => {
   cleanup()
   clearAllPrompts()
   $activeSessionId.set(null)
+  setAppLanguage('zh')
 })
 
 describe('ToolGroupSlot approval surfacing', () => {

@@ -19,21 +19,22 @@ describe('workflow language preference', () => {
     vi.resetModules()
   })
 
-  it('defaults to English', async () => {
+  it('defaults to Chinese', async () => {
     const { $workflowLanguage } = await import('./workflow-language')
 
-    expect($workflowLanguage.get()).toBe('en')
+    expect($workflowLanguage.get()).toBe('zh')
   })
 
-  it('normalizes invalid values to English', async () => {
-    storage.set('hermes.desktop.workflowLanguage.v1', 'fr')
+  it('normalizes invalid values to Chinese', async () => {
+    storage.set('hermes.desktop.language.v1', 'fr')
     const { $workflowLanguage } = await import('./workflow-language')
 
-    expect($workflowLanguage.get()).toBe('en')
+    expect($workflowLanguage.get()).toBe('zh')
   })
 
   it('persists Chinese selection', async () => {
-    const { $workflowLanguage, WORKFLOW_LANGUAGE_STORAGE_KEY, setWorkflowLanguage } = await import('./workflow-language')
+    const { $workflowLanguage, WORKFLOW_LANGUAGE_STORAGE_KEY, setWorkflowLanguage } =
+      await import('./workflow-language')
 
     setWorkflowLanguage('zh')
 

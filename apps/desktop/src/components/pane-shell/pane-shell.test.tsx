@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
+import { setAppLanguage } from '@/store/app-language'
 import { $paneStates, setPaneOpen, setPaneWidthOverride } from '@/store/panes'
 
 import { Pane, PaneMain, PaneShell } from './pane-shell'
@@ -38,6 +39,7 @@ function mockWidth(element: HTMLElement, width: number) {
 
 describe('PaneShell composition', () => {
   beforeEach(() => {
+    setAppLanguage('en')
     $paneStates.set({})
     window.localStorage.clear()
   })
@@ -46,12 +48,13 @@ describe('PaneShell composition', () => {
     cleanup()
     $paneStates.set({})
     window.localStorage.clear()
+    setAppLanguage('zh')
   })
 
   it('builds a 2-column grid for one left pane + main', () => {
     const rendered = render(
       <PaneShell>
-        <Pane id="files" side="left" width="240px">
+        <Pane id="files" resizable side="left" width="240px">
           files
         </Pane>
         <PaneMain>main</PaneMain>
@@ -66,7 +69,7 @@ describe('PaneShell composition', () => {
   it('orders panes left-to-right by side, preserving source order within a side', () => {
     const rendered = render(
       <PaneShell>
-        <Pane id="files" side="left" width="240px">
+        <Pane id="files" resizable side="left" width="240px">
           files
         </Pane>
         <Pane id="sessions" side="left" width="200px">
@@ -153,7 +156,7 @@ describe('PaneShell composition', () => {
 
     const rendered = render(
       <PaneShell>
-        <Pane id="files" side="left" width="240px">
+        <Pane id="files" resizable side="left" width="240px">
           files
         </Pane>
         <PaneMain>main</PaneMain>

@@ -2,6 +2,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setAppLanguage } from '@/store/app-language'
+
 const getSkills = vi.fn()
 const getToolsets = vi.fn()
 const toggleSkill = vi.fn()
@@ -51,6 +53,7 @@ function renderSkills() {
 }
 
 beforeEach(() => {
+  setAppLanguage('en')
   getSkills.mockResolvedValue([])
   getToolsets.mockResolvedValue([toolset()])
   toggleToolset.mockResolvedValue({ ok: true, name: 'web', enabled: false })
@@ -60,6 +63,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  setAppLanguage('zh')
 })
 
 describe('SkillsView toolset management', () => {
@@ -75,13 +79,11 @@ describe('SkillsView toolset management', () => {
   })
 
   it('renders toolset titles without leading emoji', async () => {
-    getToolsets.mockResolvedValue([
-      toolset({ name: 'cronjob', label: '⏰ Cron Jobs', description: 'cron tools' })
-    ])
+    getToolsets.mockResolvedValue([toolset({ name: 'cronjob', label: '⏰ Cron Jobs', description: 'cron tools' })])
 
     await renderSkills()
 
-    expect(screen.getByText('Cron Jobs')).toBeTruthy()
+    expect(await screen.findByText('Cron Jobs')).toBeTruthy()
     expect(screen.queryByText(/⏰/)).toBeNull()
   })
 

@@ -1,5 +1,5 @@
-import * as React from 'react'
 import codiconSprite from '@vscode/codicons/dist/codicon.svg?raw'
+import * as React from 'react'
 
 import { cn } from '@/lib/utils'
 

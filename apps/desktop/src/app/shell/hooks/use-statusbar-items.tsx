@@ -4,6 +4,7 @@ import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
+import { useAppCopy } from '@/i18n'
 import {
   Activity,
   AlertCircle,
@@ -78,6 +79,8 @@ export function useStatusbarItems({
   statusSnapshot,
   toggleCommandCenter
 }: StatusbarItemsOptions) {
+  const appCopy = useAppCopy()
+  const copy = appCopy.shell
   const activeSessionId = useStore($activeSessionId)
   const yoloActive = useStore($yoloActive)
   const busy = useStore($busy)
@@ -160,13 +163,13 @@ export function useStatusbarItems({
 
   const gatewayDetail = gatewayOpen
     ? inferenceStatus?.ready
-      ? 'ready'
+      ? copy.gatewayDetail.ready
       : inferenceStatus
-        ? 'needs setup'
-        : 'checking'
+        ? copy.gatewayDetail.needsSetup
+        : copy.gatewayDetail.checking
     : gatewayConnecting
-      ? 'connecting'
-      : 'offline'
+      ? copy.gatewayDetail.connecting
+      : copy.gatewayDetail.offline
 
   const gatewayClassName = inferenceReady
     ? undefined
@@ -179,21 +182,21 @@ export function useStatusbarItems({
     const sha = updateStatus?.currentSha?.slice(0, 7) ?? null
     const behind = updateStatus?.behind ?? 0
     const applying = updateApply.applying || updateApply.stage === 'restart'
-    const base = appVersion ? `v${appVersion}` : (sha ?? 'unknown')
+    const base = appVersion ? `v${appVersion}` : (sha ?? copy.versionUnknown)
     const behindHint = !applying && behind > 0 ? ` (+${behind})` : ''
 
     const label = applying
       ? updateApply.stage === 'restart'
-        ? `${base} · restart`
-        : `${base} · update`
+        ? `${base} · ${copy.versionRestart}`
+        : `${base} · ${copy.versionUpdate}`
       : `${base}${behindHint}`
 
     const tooltip = [
-      applying ? updateApply.message || 'Update in progress' : null,
-      !applying && behind > 0 && `${behind} commit${behind === 1 ? '' : 's'} behind ${updateStatus?.branch ?? '…'}`,
-      appVersion && `Hermes Desktop v${appVersion}`,
-      sha && `commit ${sha}`,
-      updateStatus?.branch && `branch ${updateStatus.branch}`
+      applying ? updateApply.message || copy.updateInProgress : null,
+      !applying && behind > 0 && copy.commitsBehind(behind, updateStatus?.branch ?? '...'),
+      appVersion && copy.desktopVersion(appVersion),
+      sha && copy.commit(sha),
+      updateStatus?.branch && copy.branch(updateStatus.branch)
     ]
       .filter(Boolean)
       .join(' · ')
@@ -211,6 +214,7 @@ export function useStatusbarItems({
     }
   }, [
     desktopVersion?.appVersion,
+    copy,
     updateApply.applying,
     updateApply.message,
     updateApply.stage,
@@ -226,7 +230,7 @@ export function useStatusbarItems({
         icon: <Command className="size-3.5" />,
         id: 'command-center',
         onSelect: toggleCommandCenter,
-        title: commandCenterOpen ? 'Close Command Center' : 'Open Command Center',
+        title: commandCenterOpen ? copy.closeCommandCenter : copy.openCommandCenter,
         variant: 'action'
       },
       {
@@ -234,10 +238,10 @@ export function useStatusbarItems({
         detail: gatewayDetail,
         icon: inferenceReady ? <Activity className="size-3" /> : <AlertCircle className="size-3" />,
         id: 'gateway-health',
-        label: 'Gateway',
+        label: copy.gateway,
         menuClassName: 'w-72',
         menuContent: gatewayMenuContent,
-        title: inferenceStatus?.reason || 'Hermes inference gateway status',
+        title: inferenceStatus?.reason || copy.gatewayInferenceStatus,
         variant: 'menu'
       },
       {
@@ -247,11 +251,11 @@ export function useStatusbarItems({
         ),
         detail:
           subagentsRunning > 0
-            ? `${subagentsRunning} subagent${subagentsRunning === 1 ? '' : 's'}`
+            ? copy.subagentCount(subagentsRunning)
             : bgFailed > 0
-              ? `${bgFailed} failed`
+              ? copy.failedCount(bgFailed)
               : bgRunning > 0
-                ? `${bgRunning} running`
+                ? copy.runningCount(bgRunning)
                 : undefined,
         icon:
           bgFailed > 0 ? (
@@ -262,16 +266,16 @@ export function useStatusbarItems({
             <Sparkles className="size-3" />
           ),
         id: 'agents',
-        label: 'Agents',
+        label: appCopy.common.agents,
         onSelect: openAgents,
-        title: agentsOpen ? 'Close agents' : 'Open agents',
+        title: agentsOpen ? copy.closeAgents : copy.openAgents,
         variant: 'action'
       },
       {
         icon: <Clock className="size-3" />,
         id: 'cron',
-        label: 'Cron',
-        title: 'Open cron jobs',
+        label: appCopy.common.cron,
+        title: copy.openCronJobs,
         to: CRON_ROUTE,
         variant: 'action'
       }
@@ -281,6 +285,9 @@ export function useStatusbarItems({
       bgFailed,
       bgRunning,
       commandCenterOpen,
+      copy,
+      appCopy.common.agents,
+      appCopy.common.cron,
       gatewayMenuContent,
       gatewayClassName,
       gatewayDetail,
@@ -299,8 +306,8 @@ export function useStatusbarItems({
         hidden: !busy || !turnStartedAt,
         icon: <Loader2 className="size-3 animate-spin" />,
         id: 'running-timer',
-        label: 'Running',
-        title: 'Current turn elapsed',
+        label: copy.running,
+        title: copy.currentTurnElapsed,
         variant: 'text'
       },
       {
@@ -308,15 +315,15 @@ export function useStatusbarItems({
         hidden: !contextUsage,
         id: 'context-usage',
         label: contextUsage,
-        title: 'Context usage',
+        title: copy.contextUsage,
         variant: 'text'
       },
       {
         detail: <LiveDuration since={sessionStartedAt} />,
         hidden: !sessionStartedAt,
         id: 'session-timer',
-        label: 'Session',
-        title: 'Runtime session elapsed',
+        label: copy.session,
+        title: copy.runtimeSessionElapsed,
         variant: 'text'
       },
       {
@@ -329,9 +336,7 @@ export function useStatusbarItems({
         ),
         id: 'yolo',
         onSelect: () => void toggleYolo(),
-        title: yoloActive
-          ? 'YOLO on — auto-approving dangerous commands. Click to turn off.'
-          : 'YOLO off — click to auto-approve dangerous commands.',
+        title: yoloActive ? copy.yoloOnTitle : copy.yoloOffTitle,
         variant: 'action'
       },
       {
@@ -352,12 +357,14 @@ export function useStatusbarItems({
               menuAlign: 'end' as const,
               menuClassName: 'w-64',
               menuContent: modelMenuContent,
-              title: currentProvider ? `Model · ${currentProvider}: ${currentModel || 'none'}` : 'Switch model',
+              title: currentProvider
+                ? `${appCopy.common.model} · ${currentProvider}: ${currentModel || copy.none}`
+                : copy.switchModel,
               variant: 'menu' as const
             }
           : {
               onSelect: () => setModelPickerOpen(true),
-              title: currentProvider ? `${currentProvider} · ${currentModel || 'no model'}` : 'Open model picker',
+              title: currentProvider ? `${currentProvider} · ${currentModel || copy.noModel}` : copy.openModelPicker,
               variant: 'action' as const
             })
       },
@@ -367,6 +374,8 @@ export function useStatusbarItems({
       busy,
       contextBar,
       contextUsage,
+      copy,
+      appCopy.common.model,
       currentFastMode,
       currentModel,
       currentProvider,

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
+import { useAppCopy } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 interface NormalisedSpinner {
@@ -38,7 +39,8 @@ interface BrailleSpinnerProps {
  * `leading-none` and `items-center` so it sits vertically centred inside
  * its parent's line-box (e.g. the 1.1rem disclosure row).
  */
-export function BrailleSpinner({ ariaLabel = 'Loading', className, spinner = 'breathe' }: BrailleSpinnerProps) {
+export function BrailleSpinner({ ariaLabel, className, spinner = 'breathe' }: BrailleSpinnerProps) {
+  const copy = useAppCopy()
   const spin = FRAMES_BY_NAME[spinner] ?? FRAMES_BY_NAME.breathe!
   const [frame, setFrame] = useState(0)
 
@@ -51,7 +53,7 @@ export function BrailleSpinner({ ariaLabel = 'Loading', className, spinner = 'br
 
   return (
     <span
-      aria-label={ariaLabel}
+      aria-label={ariaLabel ?? copy.common.loading}
       className={cn('inline-flex items-center justify-center font-mono leading-none tabular-nums', className)}
       role="status"
     >

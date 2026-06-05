@@ -3,10 +3,14 @@ import type * as React from 'react'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import type { useAppCopy } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
+
+type CronCopy = ReturnType<typeof useAppCopy>['cron']
 
 interface CronJobActions {
   busy?: boolean
+  copy: CronCopy
   isPaused: boolean
   title: string
   onDelete: () => void
@@ -24,6 +28,7 @@ export function CronJobActionsMenu({
   align = 'end',
   busy = false,
   children,
+  copy,
   isPaused,
   onDelete,
   onEdit,
@@ -35,12 +40,7 @@ export function CronJobActionsMenu({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
-      <DropdownMenuContent
-        align={align}
-        aria-label={`Actions for ${title}`}
-        className="w-44"
-        sideOffset={sideOffset}
-      >
+      <DropdownMenuContent align={align} aria-label={copy.actionsFor(title)} className="w-44" sideOffset={sideOffset}>
         <DropdownMenuItem
           disabled={busy}
           onSelect={() => {
@@ -49,7 +49,7 @@ export function CronJobActionsMenu({
           }}
         >
           <Codicon name={isPaused ? 'play' : 'debug-pause'} size="0.875rem" />
-          <span>{isPaused ? 'Resume' : 'Pause'}</span>
+          <span>{isPaused ? copy.resume : copy.pause}</span>
         </DropdownMenuItem>
 
         <DropdownMenuItem
@@ -60,7 +60,7 @@ export function CronJobActionsMenu({
           }}
         >
           <Codicon name="zap" size="0.875rem" />
-          <span>Trigger now</span>
+          <span>{copy.triggerNow}</span>
         </DropdownMenuItem>
 
         <DropdownMenuItem
@@ -70,7 +70,7 @@ export function CronJobActionsMenu({
           }}
         >
           <Codicon name="edit" size="0.875rem" />
-          <span>Edit</span>
+          <span>{copy.edit}</span>
         </DropdownMenuItem>
 
         <DropdownMenuItem
@@ -81,7 +81,7 @@ export function CronJobActionsMenu({
           variant="destructive"
         >
           <Codicon name="trash" size="0.875rem" />
-          <span>Delete</span>
+          <span>{copy.delete}</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
@@ -89,16 +89,17 @@ export function CronJobActionsMenu({
 }
 
 interface CronJobActionsTriggerProps extends Omit<React.ComponentProps<typeof Button>, 'size' | 'variant'> {
+  copy: CronCopy
   title: string
 }
 
-export function CronJobActionsTrigger({ className, title, ...props }: CronJobActionsTriggerProps) {
+export function CronJobActionsTrigger({ className, copy, title, ...props }: CronJobActionsTriggerProps) {
   return (
     <Button
-      aria-label={`Actions for ${title}`}
+      aria-label={copy.actionsFor(title)}
       className={className}
       size="icon-sm"
-      title="Cron job actions"
+      title={copy.actionsTitle}
       variant="ghost"
       {...props}
     >

@@ -1,23 +1,21 @@
 import type { ComponentProps } from 'react'
 
 import { Loader } from '@/components/ui/loader'
+import { useAppCopy } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 interface PageLoaderProps extends Omit<ComponentProps<'div'>, 'children'> {
   label?: string
 }
 
-export function PageLoader({
-  'aria-label': ariaLabel,
-  className,
-  label = 'Loading',
-  role = 'status',
-  ...props
-}: PageLoaderProps) {
+export function PageLoader({ 'aria-label': ariaLabel, className, label, role = 'status', ...props }: PageLoaderProps) {
+  const copy = useAppCopy()
+  const resolvedLabel = label ?? copy.common.loading
+
   return (
     <div
       {...props}
-      aria-label={ariaLabel ?? label}
+      aria-label={ariaLabel ?? resolvedLabel}
       className={cn('grid h-full place-items-center', className)}
       role={role}
     >

@@ -31,8 +31,8 @@ import type {
   ProfileCreatePayload,
   ProfileSoul,
   ProfilesResponse,
-  SessionMessagesResponse,
   SessionInfo,
+  SessionMessagesResponse,
   SessionSearchResponse,
   SkillInfo,
   StatusResponse,
@@ -53,8 +53,8 @@ import type {
   WorkflowIntakePayload,
   WorkflowIntakeResponse,
   WorkflowProject,
-  WorkflowSlashCommandItem,
-  WorkflowRunResponse
+  WorkflowRunResponse,
+  WorkflowSlashCommandItem
 } from '@/types/workflow'
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000

@@ -75,6 +75,7 @@ import {
 import { Loader } from '@/components/ui/loader'
 import type { HermesGateway } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { type AppCopy, useAppCopy } from '@/i18n'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon } from '@/lib/icons'
@@ -187,22 +188,26 @@ function pickPrimaryPreviewTarget(targets: string[]): string[] {
   return [localUrl || targets[targets.length - 1]]
 }
 
-const CenteredThreadSpinner: FC = () => (
-  <div
-    aria-label="Loading session"
-    className="pointer-events-none absolute inset-0 z-1 grid place-items-center"
-    role="status"
-  >
-    <Loader
-      aria-hidden="true"
-      className="size-12 text-midground/70"
-      pathSteps={220}
-      role="presentation"
-      strokeScale={0.72}
-      type="rose-curve"
-    />
-  </div>
-)
+const CenteredThreadSpinner: FC = () => {
+  const copy = useAppCopy().assistant
+
+  return (
+    <div
+      aria-label={copy.loadingSession}
+      className="pointer-events-none absolute inset-0 z-1 grid place-items-center"
+      role="status"
+    >
+      <Loader
+        aria-hidden="true"
+        className="size-12 text-midground/70"
+        pathSteps={220}
+        role="presentation"
+        strokeScale={0.72}
+        type="rose-curve"
+      />
+    </div>
+  )
+}
 
 const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> = ({ onBranchInNewChat }) => {
   const messageId = useAuiState(s => s.message.id)
@@ -285,10 +290,11 @@ const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentProp
 )
 
 const ResponseLoadingIndicator: FC = () => {
+  const copy = useAppCopy().assistant
   const elapsed = useElapsedSeconds()
 
   return (
-    <StatusRow data-slot="aui_response-loading" label="Hermes is loading a response">
+    <StatusRow data-slot="aui_response-loading" label={copy.loadingResponse}>
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
       <ActivityTimerText seconds={elapsed} />
     </StatusRow>
@@ -337,6 +343,7 @@ const ThinkingDisclosure: FC<{
   pending?: boolean
   timerKey?: string
 }> = ({ children, messageRunning = false, pending = false, timerKey }) => {
+  const copy = useAppCopy().assistant
   // `null` = no explicit user toggle yet, defer to the streaming default.
   // The default is "auto-open while streaming, auto-collapse when done" so
   // reasoning surfaces a live preview without manual interaction. The first
@@ -393,7 +400,7 @@ const ThinkingDisclosure: FC<{
               pending && 'shimmer text-foreground/55'
             )}
           >
-            Thinking
+            {copy.thinking}
           </span>
           {pending && (
             <ActivityTimerText
@@ -437,9 +444,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     s =>
       s.thread.isRunning &&
       s.message.status?.type === 'running' &&
-      s.message.parts
-        .slice(Math.max(0, startIndex))
-        .some(p => p?.type === 'reasoning' && p.status?.type !== 'complete')
+      s.message.parts.slice(Math.max(0, startIndex)).some(p => p?.type === 'reasoning' && p.status?.type !== 'complete')
   )
 
   return (
@@ -495,7 +500,7 @@ function startOfDay(d: Date): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
 }
 
-function formatMessageTimestamp(value: Date | string | number | undefined): string {
+function formatMessageTimestamp(value: Date | string | number | undefined, copy: AppCopy['assistant']): string {
   if (!value) {
     return ''
   }
@@ -509,17 +514,18 @@ function formatMessageTimestamp(value: Date | string | number | undefined): stri
   const dayDelta = Math.round((startOfDay(new Date()) - startOfDay(date)) / 86_400_000)
 
   if (dayDelta === 0) {
-    return `Today, ${TIME_FMT.format(date)}`
+    return copy.timestampToday(TIME_FMT.format(date))
   }
 
   if (dayDelta === 1) {
-    return `Yesterday, ${TIME_FMT.format(date)}`
+    return copy.timestampYesterday(TIME_FMT.format(date))
   }
 
   return SHORT_FMT.format(date)
 }
 
 const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, onBranchInNewChat }) => {
+  const copy = useAppCopy().assistant
   const [menuOpen, setMenuOpen] = useState(false)
 
   return (
@@ -538,15 +544,15 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, on
         )}
         data-slot="aui_msg-actions"
       >
-        <CopyButton appearance="icon" buttonSize="icon" disabled={!messageText} label="Copy" text={messageText} />
+        <CopyButton appearance="icon" buttonSize="icon" disabled={!messageText} label={copy.copy} text={messageText} />
         <ActionBarPrimitive.Reload asChild>
-          <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip="Refresh">
+          <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip={copy.refresh}>
             <Codicon name="refresh" />
           </TooltipIconButton>
         </ActionBarPrimitive.Reload>
         <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
           <DropdownMenuTrigger asChild>
-            <TooltipIconButton tooltip="More actions">
+            <TooltipIconButton tooltip={copy.moreActions}>
               <Codicon name="ellipsis" />
             </TooltipIconButton>
           </DropdownMenuTrigger>
@@ -554,7 +560,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, on
             <MessageTimestamp />
             <DropdownMenuItem onSelect={() => onBranchInNewChat?.(messageId)}>
               <GitBranchIcon />
-              Branch in new chat
+              {copy.branchInNewChat}
             </DropdownMenuItem>
             <ReadAloudItem messageId={messageId} text={messageText} />
           </DropdownMenuContent>
@@ -565,6 +571,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, on
 }
 
 const ReadAloudItem: FC<{ messageId: string; text: string }> = ({ messageId, text }) => {
+  const copy = useAppCopy().assistant
   const voicePlayback = useStore($voicePlayback)
 
   const readAloudStatus =
@@ -583,9 +590,9 @@ const ReadAloudItem: FC<{ messageId: string; text: string }> = ({ messageId, tex
     try {
       await playSpeechText(text, { messageId, source: 'read-aloud' })
     } catch (error) {
-      notifyError(error, 'Read aloud failed')
+      notifyError(error, copy.readAloudFailed)
     }
-  }, [messageId, text])
+  }, [copy.readAloudFailed, messageId, text])
 
   return (
     <DropdownMenuItem
@@ -596,14 +603,15 @@ const ReadAloudItem: FC<{ messageId: string; text: string }> = ({ messageId, tex
       }}
     >
       <Icon className={isPreparing ? 'animate-spin' : undefined} />
-      {isPreparing ? 'Preparing audio...' : isSpeaking ? 'Stop reading' : 'Read aloud'}
+      {isPreparing ? copy.preparingAudio : isSpeaking ? copy.stopReading : copy.readAloud}
     </DropdownMenuItem>
   )
 }
 
 const MessageTimestamp: FC = () => {
+  const copy = useAppCopy().assistant
   const createdAt = useAuiState(s => s.message.createdAt)
-  const label = formatMessageTimestamp(createdAt)
+  const label = formatMessageTimestamp(createdAt, copy)
 
   if (!label) {
     return null
@@ -670,6 +678,7 @@ const StopGlyph = <IconPlayerStopFilled aria-hidden className="size-3.5 -transla
 const UserMessage: FC<{
   onCancel?: () => Promise<void> | void
 }> = ({ onCancel }) => {
+  const copy = useAppCopy().assistant
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
@@ -761,10 +770,10 @@ const UserMessage: FC<{
               ) : (
                 <ActionBarPrimitive.Edit asChild>
                   <button
-                    aria-label="Edit message"
+                    aria-label={copy.editMessage}
                     className={bubbleClassName}
                     onClick={() => triggerHaptic('selection')}
-                    title="Edit message"
+                    title={copy.editMessage}
                     type="button"
                   >
                     {bubbleContent}
@@ -775,14 +784,14 @@ const UserMessage: FC<{
                 <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
                   {showStop ? (
                     <button
-                      aria-label="Stop"
+                      aria-label={copy.stop}
                       className={cn('pointer-events-auto size-5', USER_ACTION_ICON_BUTTON_CLASS)}
                       onClick={event => {
                         event.preventDefault()
                         event.stopPropagation()
                         void onCancel?.()
                       }}
-                      title="Stop"
+                      title={copy.stop}
                       type="button"
                     >
                       {StopGlyph}
@@ -791,7 +800,7 @@ const UserMessage: FC<{
                     <span
                       aria-hidden="true"
                       className="flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary)"
-                      title="Editable checkpoint"
+                      title={copy.editableCheckpoint}
                     >
                       <Codicon name="discard" size="0.875rem" />
                     </span>
@@ -806,18 +815,18 @@ const UserMessage: FC<{
               <span aria-hidden className="checkpoint-icon size-1.5 rounded-full border border-current" />
               <BranchPickerPrimitive.Previous
                 className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
-                title="Restore previous checkpoint"
+                title={copy.restorePreviousCheckpoint}
               >
-                Restore checkpoint
+                {copy.restoreCheckpoint}
               </BranchPickerPrimitive.Previous>
               <span className="checkpoint-divider opacity-55">
                 <BranchPickerPrimitive.Number />/<BranchPickerPrimitive.Count />
               </span>
               <BranchPickerPrimitive.Next
                 className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
-                title="Restore next checkpoint"
+                title={copy.restoreNextCheckpoint}
               >
-                Go forward
+                {copy.goForward}
               </BranchPickerPrimitive.Next>
             </BranchPickerPrimitive.Root>
           </div>
@@ -870,6 +879,7 @@ interface UserEditComposerProps {
 }
 
 const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }) => {
+  const copy = useAppCopy().assistant
   const aui = useAui()
   const draft = useAuiState(s => s.composer.text)
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -1346,7 +1356,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
             data-expanded={expanded ? 'true' : undefined}
           >
             <div
-              aria-label="Edit message"
+              aria-label={copy.editMessage}
               autoFocus
               className={cn(
                 'ui-prompt-input-editor__input max-h-48 w-full resize-none bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 outline-none',
@@ -1355,7 +1365,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
                 expanded ? 'min-h-16' : 'min-h-[1.25rem]'
               )}
               contentEditable
-              data-placeholder="Edit message"
+              data-placeholder={copy.editMessage}
               data-slot={RICH_INPUT_SLOT}
               onBlur={() => window.setTimeout(closeTrigger, 80)}
               onDragOver={handleDragOver}
@@ -1372,7 +1382,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
             />
             <ComposerPrimitive.Input className="sr-only" tabIndex={-1} unstable_focusOnScrollToBottom={false} />
             <button
-              aria-label="Send edited message"
+              aria-label={copy.sendEditedMessage}
               className={cn('absolute right-2 bottom-2 size-5', USER_ACTION_ICON_BUTTON_CLASS)}
               disabled={!canSubmit || submitting}
               onClick={() => {
@@ -1382,7 +1392,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
                   submitEdit(editor)
                 }
               }}
-              title="Send edited message"
+              title={copy.sendEditedMessage}
               type="button"
             >
               {submitting ? StopGlyph : <Codicon name="arrow-up" size={USER_ACTION_ICON_SIZE} />}

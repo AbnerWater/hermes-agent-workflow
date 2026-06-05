@@ -1,6 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { setAppLanguage } from '@/store/app-language'
+
 const getGlobalModelInfo = vi.fn()
 const getGlobalModelOptions = vi.fn()
 const getAuxiliaryModels = vi.fn()
@@ -14,6 +16,7 @@ vi.mock('@/hermes', () => ({
 }))
 
 beforeEach(() => {
+  setAppLanguage('en')
   getGlobalModelInfo.mockResolvedValue({ provider: 'nous', model: 'hermes-4' })
   getGlobalModelOptions.mockResolvedValue({
     providers: [{ name: 'Nous', slug: 'nous', models: ['hermes-4', 'hermes-4-mini'] }]
@@ -28,6 +31,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  setAppLanguage('zh')
 })
 
 async function renderModelSettings() {
@@ -41,7 +45,7 @@ describe('ModelSettings', () => {
     await renderModelSettings()
 
     await waitFor(() => expect(getGlobalModelInfo).toHaveBeenCalled())
-    expect(screen.getByText('nous / hermes-4')).toBeTruthy()
+    expect(screen.getByText('Current main model: nous / hermes-4')).toBeTruthy()
   })
 
   it('renders the auxiliary task rows', async () => {

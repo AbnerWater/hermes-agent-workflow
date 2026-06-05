@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
 import { deleteSession, listSessions, setSessionArchived } from '@/hermes'
+import { useAppCopy } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
@@ -32,6 +33,7 @@ function workspaceLabel(cwd: null | string | undefined): string {
 }
 
 export function SessionsSettings() {
+  const copy = useAppCopy().settings
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -43,50 +45,56 @@ export function SessionsSettings() {
       const result = await listSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
       setLocalSessions(result.sessions)
     } catch (err) {
-      notifyError(err, 'Could not load archived sessions')
+      notifyError(err, copy.couldNotLoadArchivedSessions)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [copy.couldNotLoadArchivedSessions])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  const unarchive = useCallback(async (session: SessionInfo) => {
-    setBusyId(session.id)
+  const unarchive = useCallback(
+    async (session: SessionInfo) => {
+      setBusyId(session.id)
 
-    try {
-      await setSessionArchived(session.id, false)
-      setLocalSessions(prev => prev.filter(s => s.id !== session.id))
-      // Surface it again in the sidebar without waiting for a full refresh.
-      setSessions(prev => [{ ...session, archived: false }, ...prev.filter(s => s.id !== session.id)])
-      triggerHaptic('selection')
-      notify({ durationMs: 2_000, kind: 'success', message: 'Restored' })
-    } catch (err) {
-      notifyError(err, 'Unarchive failed')
-    } finally {
-      setBusyId(null)
-    }
-  }, [])
+      try {
+        await setSessionArchived(session.id, false)
+        setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+        // Surface it again in the sidebar without waiting for a full refresh.
+        setSessions(prev => [{ ...session, archived: false }, ...prev.filter(s => s.id !== session.id)])
+        triggerHaptic('selection')
+        notify({ durationMs: 2_000, kind: 'success', message: copy.restored })
+      } catch (err) {
+        notifyError(err, copy.unarchiveFailed)
+      } finally {
+        setBusyId(null)
+      }
+    },
+    [copy.restored, copy.unarchiveFailed]
+  )
 
-  const remove = useCallback(async (session: SessionInfo) => {
-    if (!window.confirm(`Permanently delete "${sessionTitle(session)}"? This cannot be undone.`)) {
-      return
-    }
+  const remove = useCallback(
+    async (session: SessionInfo) => {
+      if (!window.confirm(copy.permanentlyDeleteSessionConfirm(sessionTitle(session)))) {
+        return
+      }
 
-    setBusyId(session.id)
+      setBusyId(session.id)
 
-    try {
-      await deleteSession(session.id)
-      setLocalSessions(prev => prev.filter(s => s.id !== session.id))
-      triggerHaptic('warning')
-    } catch (err) {
-      notifyError(err, 'Delete failed')
-    } finally {
-      setBusyId(null)
-    }
-  }, [])
+      try {
+        await deleteSession(session.id)
+        setLocalSessions(prev => prev.filter(s => s.id !== session.id))
+        triggerHaptic('warning')
+      } catch (err) {
+        notifyError(err, copy.deleteFailed)
+      } finally {
+        setBusyId(null)
+      }
+    },
+    [copy]
+  )
 
   useDeepLinkHighlight({
     elementId: id => `archived-session-${id}`,
@@ -95,7 +103,7 @@ export function SessionsSettings() {
   })
 
   if (loading) {
-    return <LoadingState label="Loading archived sessions…" />
+    return <LoadingState label={copy.loadingArchivedSessions} />
   }
 
   return (
@@ -105,15 +113,14 @@ export function SessionsSettings() {
       <SectionHeading
         icon={Archive}
         meta={sessions.length ? String(sessions.length) : undefined}
-        title="Archived sessions"
+        title={copy.archivedSessions}
       />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        Archived chats are hidden from the sidebar but keep all their messages. Ctrl/⌘-click a chat in the sidebar to
-        archive it.
+        {copy.archivedSessionsDescription}
       </p>
 
       {sessions.length === 0 ? (
-        <EmptyState description="Archive a chat to hide it here." title="Nothing archived" />
+        <EmptyState description={copy.nothingArchivedDescription} title={copy.nothingArchived} />
       ) : (
         <div className="grid gap-1">
           {sessions.map(session => {
@@ -133,11 +140,11 @@ export function SessionsSettings() {
                         variant="textStrong"
                       >
                         {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArchiveOff className="size-3.5" />}
-                        <span>Unarchive</span>
+                        <span>{copy.unarchive}</span>
                       </Button>
-                      <Tip label="Delete permanently">
+                      <Tip label={copy.deletePermanently}>
                         <Button
-                          aria-label="Delete permanently"
+                          aria-label={copy.deletePermanently}
                           className="text-muted-foreground hover:text-destructive"
                           disabled={busy}
                           onClick={() => void remove(session)}
@@ -151,7 +158,9 @@ export function SessionsSettings() {
                     </div>
                   }
                   description={session.preview || undefined}
-                  hint={label ? `${label} · ${session.message_count} messages` : `${session.message_count} messages`}
+                  hint={
+                    label ? `${label} · ${copy.messages(session.message_count)}` : copy.messages(session.message_count)
+                  }
                   title={sessionTitle(session)}
                 />
               </div>
@@ -167,6 +176,7 @@ export function SessionsSettings() {
 // builds on Windows used to spawn sessions in the install dir (`win-unpacked`
 // / Program Files), which buried any files Hermes wrote there.
 function DefaultProjectDirSetting() {
+  const copy = useAppCopy().settings
   const [dir, setDir] = useState<null | string>(null)
   const [fallback, setFallback] = useState<string>('')
   const [busy, setBusy] = useState(false)
@@ -217,13 +227,13 @@ function DefaultProjectDirSetting() {
 
       const result = await settings.setDefaultProjectDir(picked.dir)
       setDir(result.dir)
-      notify({ durationMs: 2_000, kind: 'success', message: 'Default project directory updated' })
+      notify({ durationMs: 2_000, kind: 'success', message: copy.defaultProjectDirectoryUpdated })
     } catch (err) {
-      notifyError(err, 'Could not update default directory')
+      notifyError(err, copy.couldNotUpdateDefaultDirectory)
     } finally {
       setBusy(false)
     }
-  }, [])
+  }, [copy.couldNotUpdateDefaultDirectory, copy.defaultProjectDirectoryUpdated])
 
   const clear = useCallback(async () => {
     const settings = window.hermesDesktop?.settings
@@ -238,34 +248,34 @@ function DefaultProjectDirSetting() {
       await settings.setDefaultProjectDir(null)
       setDir(null)
     } catch (err) {
-      notifyError(err, 'Could not clear default directory')
+      notifyError(err, copy.couldNotClearDefaultDirectory)
     } finally {
       setBusy(false)
     }
-  }, [])
+  }, [copy.couldNotClearDefaultDirectory])
 
   return (
     <div className="mb-6">
-      <SectionHeading icon={FolderOpen} title="Default project directory" />
+      <SectionHeading icon={FolderOpen} title={copy.defaultProjectDirectory} />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-        New sessions start in this folder unless you pick another. Leave it unset to use your home directory.
+        {copy.defaultProjectDirectoryDescription}
       </p>
       <ListRow
         action={
           <div className="flex items-center gap-3">
             <Button disabled={busy} onClick={() => void choose()} size="sm" type="button" variant="textStrong">
               <FolderOpen className="size-3.5" />
-              <span>{dir ? 'Change' : 'Choose'}</span>
+              <span>{dir ? copy.change : copy.choose}</span>
             </Button>
             {dir && (
               <Button disabled={busy} onClick={() => void clear()} size="sm" type="button" variant="text">
-                Clear
+                {copy.clear}
               </Button>
             )}
           </div>
         }
-        description={dir || `Defaults to ${fallback || '~/hermes-projects'}.`}
-        title={dir ? dir : 'Not set'}
+        description={dir || copy.defaultsTo(fallback || '~/hermes-projects')}
+        title={dir ? dir : copy.notSet}
       />
     </div>
   )

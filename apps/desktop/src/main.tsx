@@ -1,13 +1,14 @@
 import './styles.css'
 
 import { QueryClientProvider } from '@tanstack/react-query'
-import { StrictMode } from 'react'
+import { StrictMode, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 import { HashRouter } from 'react-router-dom'
 
 import App from './app'
 import { ErrorBoundary } from './components/error-boundary'
 import { HapticsProvider } from './components/haptics-provider'
+import { useAppLanguage } from './i18n'
 import { installClipboardShim } from './lib/clipboard'
 import { queryClient } from './lib/query-client'
 import { ThemeProvider } from './themes/context'
@@ -23,12 +24,23 @@ if (import.meta.env.MODE !== 'production') {
   import('./app/chat/perf-probe')
 }
 
+function AppLanguageEffect() {
+  const language = useAppLanguage()
+
+  useEffect(() => {
+    document.documentElement.lang = language === 'zh' ? 'zh-CN' : 'en'
+  }, [language])
+
+  return null
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary label="root">
       <QueryClientProvider client={queryClient}>
         <ThemeProvider>
           <HapticsProvider>
+            <AppLanguageEffect />
             <HashRouter>
               <App />
             </HashRouter>

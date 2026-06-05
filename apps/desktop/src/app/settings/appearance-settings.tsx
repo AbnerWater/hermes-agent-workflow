@@ -1,17 +1,17 @@
 import { useStore } from '@nanostores/react'
 import type { ReactNode } from 'react'
 
-import { WORKFLOW_LANGUAGE_OPTIONS } from '@/app/workflows/i18n'
 import { SegmentedControl } from '@/components/ui/segmented-control'
+import { APP_LANGUAGE_OPTIONS, useAppCopy } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { $appLanguage, setAppLanguage } from '@/store/app-language'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
-import { $workflowLanguage, setWorkflowLanguage } from '@/store/workflow-language'
 import { useTheme } from '@/themes/context'
 import { BUILTIN_THEMES } from '@/themes/presets'
 
-import { MODE_OPTIONS } from './constants'
+import { modeOptionsFor } from './constants'
 import { SettingsContent } from './primitives'
 
 function ThemePreview({ name }: { name: string }) {
@@ -69,16 +69,16 @@ function SectionHead({ title, description, control }: { title: string; descripti
 }
 
 export function AppearanceSettings() {
+  const copy = useAppCopy()
   const { themeName, mode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
-  const workflowLanguage = useStore($workflowLanguage)
+  const appLanguage = useStore($appLanguage)
 
   return (
     <SettingsContent>
       <div className="grid gap-8">
         <p className="max-w-2xl text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-          These are desktop-only display preferences. Mode controls brightness; theme controls the accent palette and
-          chat surface styling.
+          {copy.settings.appearanceDescription}
         </p>
 
         <section>
@@ -89,12 +89,12 @@ export function AppearanceSettings() {
                   triggerHaptic('crisp')
                   setMode(id)
                 }}
-                options={MODE_OPTIONS}
+                options={modeOptionsFor(appLanguage)}
                 value={mode}
               />
             }
-            description="Pick a fixed mode or let Hermes follow your system setting."
-            title="Color Mode"
+            description={copy.settings.colorModeDescription}
+            title={copy.settings.colorModeTitle}
           />
         </section>
 
@@ -104,17 +104,17 @@ export function AppearanceSettings() {
               <SegmentedControl
                 onChange={id => {
                   triggerHaptic('selection')
-                  setWorkflowLanguage(id)
+                  setAppLanguage(id)
                 }}
-                options={WORKFLOW_LANGUAGE_OPTIONS.map(option => ({
+                options={APP_LANGUAGE_OPTIONS.map(option => ({
                   id: option.value,
                   label: option.label
                 }))}
-                value={workflowLanguage}
+                value={appLanguage}
               />
             }
-            description="Controls labels in the Workflow workbench only. Existing chat and settings pages stay unchanged."
-            title="Workflow Language"
+            description={copy.settings.appLanguageDescription}
+            title={copy.settings.appLanguageTitle}
           />
         </section>
 
@@ -128,20 +128,20 @@ export function AppearanceSettings() {
                 }}
                 options={
                   [
-                    { id: 'product', label: 'Product' },
-                    { id: 'technical', label: 'Technical' }
+                    { id: 'product', label: copy.settings.toolViewProduct },
+                    { id: 'technical', label: copy.settings.toolViewTechnical }
                   ] as const
                 }
                 value={toolViewMode}
               />
             }
-            description="Product hides raw tool payloads; Technical shows full input/output."
-            title="Tool Call Display"
+            description={copy.settings.toolCallDisplayDescription}
+            title={copy.settings.toolCallDisplayTitle}
           />
         </section>
 
         <section className="grid gap-3">
-          <SectionHead description="Desktop palettes only. The selected mode is applied on top." title="Theme" />
+          <SectionHead description={copy.settings.themeDescription} title={copy.settings.themeTitle} />
           <div className="grid gap-x-4 gap-y-5 sm:grid-cols-2 xl:grid-cols-3">
             {availableThemes.map(theme => {
               const active = themeName === theme.name

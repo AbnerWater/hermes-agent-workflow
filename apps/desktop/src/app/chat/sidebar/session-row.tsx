@@ -5,6 +5,7 @@ import { writeSessionDrag } from '@/app/chat/composer/inline-refs'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
+import { useAppCopy, useAppLanguage } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
@@ -32,16 +33,22 @@ const AGE_TICKS: ReadonlyArray<[number, string]> = [
   [60_000, 'm']
 ]
 
-function formatAge(seconds: number): string {
+function formatAge(seconds: number, language: 'en' | 'zh'): string {
   const delta = Math.max(0, Date.now() - seconds * 1000)
 
   for (const [ms, suffix] of AGE_TICKS) {
     if (delta >= ms) {
-      return `${Math.floor(delta / ms)}${suffix}`
+      const value = Math.floor(delta / ms)
+
+      if (language === 'zh') {
+        return suffix === 'd' ? `${value}天` : suffix === 'h' ? `${value}时` : `${value}分`
+      }
+
+      return `${value}${suffix}`
     }
   }
 
-  return 'now'
+  return language === 'zh' ? '刚刚' : 'now'
 }
 
 export function SidebarSessionRow({
@@ -61,9 +68,11 @@ export function SidebarSessionRow({
   ref,
   ...rest
 }: SidebarSessionRowProps) {
+  const copy = useAppCopy()
+  const language = useAppLanguage()
   const title = sessionTitle(session)
-  const age = formatAge(session.last_active || session.started_at)
-  const handleLabel = `Reorder ${title}`
+  const age = formatAge(session.last_active || session.started_at, language)
+  const handleLabel = copy.sidebar.reorderSession(title)
   // Subscribe per-row (the leaf) instead of drilling a set through the list —
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
@@ -173,8 +182,8 @@ export function SidebarSessionRow({
                 needsInput ? 'overflow-visible' : 'overflow-hidden'
               )}
             >
-            <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
-          </span>
+              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
+            </span>
           )}
           <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
@@ -196,10 +205,10 @@ export function SidebarSessionRow({
             title={title}
           >
             <Button
-              aria-label={`Actions for ${title}`}
+              aria-label={copy.sidebar.actionsFor(title)}
               className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
               size="icon"
-              title="Session actions"
+              title={copy.sidebar.sessionActions}
               variant="ghost"
             >
               <Codicon name="ellipsis" size="0.875rem" />
@@ -220,6 +229,8 @@ function SidebarRowDot({
   needsInput?: boolean
   className?: string
 }) {
+  const copy = useAppCopy()
+
   // "Needs input" wins over "working": a clarify-blocked session is technically
   // still running, but the actionable state is that it's waiting on the user.
   // Amber + steady (no ping) reads as "your turn", distinct from the accent
@@ -227,17 +238,17 @@ function SidebarRowDot({
   if (needsInput) {
     return (
       <span
-        aria-label="Needs your input"
+        aria-label={copy.sidebar.needsInput}
         className={cn('quest-glow relative size-1.5 rounded-full bg-amber-500', className)}
         role="status"
-        title="Waiting for your answer"
+        title={copy.sidebar.waitingForAnswer}
       />
     )
   }
 
   return (
     <span
-      aria-label={isWorking ? 'Session running' : undefined}
+      aria-label={isWorking ? copy.sidebar.sessionRunning : undefined}
       className={cn(
         'rounded-full',
         isWorking

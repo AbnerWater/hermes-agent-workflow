@@ -20,11 +20,11 @@ import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 
+import { applyWorkflowProjectChange, subscribeWorkflowProjectsChanged } from '@/app/workflows/project-events'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { writeClipboardText } from '@/components/ui/copy-button'
-import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import {
   Dialog,
   DialogContent,
@@ -33,6 +33,7 @@ import {
   DialogHeader,
   DialogTitle
 } from '@/components/ui/dialog'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Input } from '@/components/ui/input'
 import { KbdGroup } from '@/components/ui/kbd'
 import { SearchField } from '@/components/ui/search-field'
@@ -47,28 +48,24 @@ import {
 } from '@/components/ui/sidebar'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tip } from '@/components/ui/tooltip'
-import { workflowCopyFor } from '@/app/workflows/i18n'
-import {
-  applyWorkflowProjectChange,
-  subscribeWorkflowProjectsChanged
-} from '@/app/workflows/project-events'
 import {
   exportWorkflowProject,
   listWorkflowProjects,
   removeWorkflowProjectFromHistory,
   searchSessions,
-  updateWorkflowProject,
   type SessionInfo,
-  type SessionSearchResult
+  type SessionSearchResult,
+  updateWorkflowProject
 } from '@/hermes'
+import { useAppCopy, useAppLanguage } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { profileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { cn } from '@/lib/utils'
 import {
   $panesFlipped,
-  $pinnedWorkflowProjectIds,
   $pinnedSessionIds,
+  $pinnedWorkflowProjectIds,
   $sidebarAgentsGrouped,
   $sidebarOpen,
   $sidebarPinsOpen,
@@ -101,7 +98,6 @@ import {
   $workingSessionIds,
   sessionPinId
 } from '@/store/session'
-import { $workflowLanguage } from '@/store/workflow-language'
 import type { WorkflowProject } from '@/types/workflow'
 
 import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE, WORKFLOWS_ROUTE } from '../../routes'
@@ -120,29 +116,6 @@ const VIRTUALIZE_THRESHOLD = 25
 const NEW_SESSION_KBD: readonly string[] =
   typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac') ? ['⌘', 'N'] : ['Ctrl', 'N']
 
-const SIDEBAR_NAV: SidebarNavItem[] = [
-  {
-    id: 'new-session',
-    label: 'New chat',
-    icon: props => <Codicon name="robot" {...props} />,
-    action: 'new-session'
-  },
-  {
-    id: 'workflows',
-    label: 'Workflow Workbench',
-    icon: props => <Codicon name="graph" {...props} />,
-    route: `${WORKFLOWS_ROUTE}?new=1`
-  },
-  {
-    id: 'skills',
-    label: 'Skills & Tools',
-    icon: props => <Codicon name="symbol-misc" {...props} />,
-    route: SKILLS_ROUTE
-  },
-  { id: 'messaging', label: 'Messaging', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
-  { id: 'artifacts', label: 'Artifacts', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
-]
-
 const WORKSPACE_PAGE = 5
 // ALL-profiles view: show only the latest N per profile up front to keep the
 // unified list scannable, then reveal/fetch more in N-sized steps on demand.
@@ -154,28 +127,30 @@ const wsId = (id: string) => `${WS_ID_PREFIX}${id}`
 const parseWsId = (id: string) => (id.startsWith(WS_ID_PREFIX) ? id.slice(WS_ID_PREFIX.length) : null)
 const countLabel = (loaded: number, total: number) => (total > loaded ? `${loaded}/${total}` : String(loaded))
 const sessionTime = (s: SessionInfo) => s.last_active || s.started_at || 0
+
 const isWorkflowSessionId = (id: null | string | undefined) =>
   WORKFLOW_SESSION_PREFIXES.some(prefix => String(id ?? '').startsWith(prefix))
+
 const isWorkflowSession = (session: Pick<SessionInfo, 'id' | 'source' | '_lineage_root_id'>) =>
   session.source === 'workflow' || isWorkflowSessionId(session.id) || isWorkflowSessionId(session._lineage_root_id)
 
-const relativeProjectTime = (project: WorkflowProject) => {
+const relativeProjectTime = (project: WorkflowProject, language: 'en' | 'zh') => {
   const timestamp = project.lastOpenedAt ?? project.updatedAt ?? project.createdAt
   const seconds = Math.max(0, Date.now() / 1000 - timestamp)
 
   if (seconds < 60) {
-    return 'now'
+    return language === 'zh' ? '刚刚' : 'now'
   }
 
   if (seconds < 3600) {
-    return `${Math.floor(seconds / 60)}m`
+    return language === 'zh' ? `${Math.floor(seconds / 60)}分` : `${Math.floor(seconds / 60)}m`
   }
 
   if (seconds < 86400) {
-    return `${Math.floor(seconds / 3600)}h`
+    return language === 'zh' ? `${Math.floor(seconds / 3600)}时` : `${Math.floor(seconds / 3600)}h`
   }
 
-  return `${Math.floor(seconds / 86400)}d`
+  return language === 'zh' ? `${Math.floor(seconds / 86400)}天` : `${Math.floor(seconds / 86400)}d`
 }
 
 function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: string[]): T[] {
@@ -295,13 +270,13 @@ export function ChatSidebar({
   onArchiveSession,
   onNewSessionInWorkspace
 }: ChatSidebarProps) {
+  const copy = useAppCopy()
   const sidebarOpen = useStore($sidebarOpen)
   const location = useLocation()
   const panesFlipped = useStore($panesFlipped)
   const agentsGrouped = useStore($sidebarAgentsGrouped)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinnedWorkflowProjectIds = useStore($pinnedWorkflowProjectIds)
-  const workflowCopy = workflowCopyFor(useStore($workflowLanguage))
   const pinsOpen = useStore($sidebarPinsOpen)
   const agentsOpen = useStore($sidebarRecentsOpen)
   const selectedSessionId = useStore($selectedStoredSessionId)
@@ -330,6 +305,42 @@ export function ChatSidebar({
   const [profileLoadMorePending, setProfileLoadMorePending] = useState<Record<string, boolean>>({})
   const trimmedQuery = searchQuery.trim()
 
+  const sidebarNav = useMemo<SidebarNavItem[]>(
+    () => [
+      {
+        id: 'new-session',
+        label: copy.common.newChat,
+        icon: props => <Codicon name="robot" {...props} />,
+        action: 'new-session'
+      },
+      {
+        id: 'workflows',
+        label: copy.workflow.workflowSidebarLabel,
+        icon: props => <Codicon name="graph" {...props} />,
+        route: `${WORKFLOWS_ROUTE}?new=1`
+      },
+      {
+        id: 'skills',
+        label: copy.common.skillsAndTools,
+        icon: props => <Codicon name="symbol-misc" {...props} />,
+        route: SKILLS_ROUTE
+      },
+      {
+        id: 'messaging',
+        label: copy.common.messaging,
+        icon: props => <Codicon name="comment" {...props} />,
+        route: MESSAGING_ROUTE
+      },
+      {
+        id: 'artifacts',
+        label: copy.common.artifacts,
+        icon: props => <Codicon name="files" {...props} />,
+        route: ARTIFACTS_ROUTE
+      }
+    ],
+    [copy]
+  )
+
   // Flash the ⌘N hint full-opacity (no transition) for the press, so hitting
   // the shortcut visibly pings its affordance in the sidebar.
   useEffect(() => {
@@ -350,6 +361,7 @@ export function ChatSidebar({
   }, [])
 
   const activeSidebarSessionId = currentView === 'chat' ? selectedSessionId : null
+
   const currentWorkflowProjectId = useMemo(() => {
     if (currentView !== 'workflows') {
       return null
@@ -358,13 +370,16 @@ export function ChatSidebar({
     return new URLSearchParams(location.search).get('project')
   }, [currentView, location.search])
 
-  const navigateToHermesHome = useCallback(() =>
-    onNavigate({
-      action: 'new-session',
-      icon: props => <Codicon name="robot" {...props} />,
-      id: 'new-session',
-      label: 'New chat'
-    }), [onNavigate])
+  const navigateToHermesHome = useCallback(
+    () =>
+      onNavigate({
+        action: 'new-session',
+        icon: props => <Codicon name="robot" {...props} />,
+        id: 'new-session',
+        label: copy.common.newChat
+      }),
+    [copy.common.newChat, onNavigate]
+  )
 
   const dndSensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -396,9 +411,16 @@ export function ChatSidebar({
       .sort((a, b) => {
         const aPin = pinOrder.get(a.id)
         const bPin = pinOrder.get(b.id)
+
         if (aPin !== undefined || bPin !== undefined) {
-          if (aPin === undefined) return 1
-          if (bPin === undefined) return -1
+          if (aPin === undefined) {
+            return 1
+          }
+
+          if (bPin === undefined) {
+            return -1
+          }
+
           return aPin - bPin
         }
 
@@ -439,19 +461,23 @@ export function ChatSidebar({
     }
   }, [sidebarOpen])
 
-  useEffect(() => subscribeWorkflowProjectsChanged(detail => {
-    const changedProjectId = detail.projectId ?? detail.project?.id ?? null
+  useEffect(
+    () =>
+      subscribeWorkflowProjectsChanged(detail => {
+        const changedProjectId = detail.projectId ?? detail.project?.id ?? null
 
-    setWorkflowProjects(projects => applyWorkflowProjectChange(projects, detail))
+        setWorkflowProjects(projects => applyWorkflowProjectChange(projects, detail))
 
-    if (
-      changedProjectId &&
-      currentWorkflowProjectId === changedProjectId &&
-      (detail.action === 'archived' || detail.action === 'removed' || detail.project?.archived)
-    ) {
-      navigateToHermesHome()
-    }
-  }), [currentWorkflowProjectId, navigateToHermesHome])
+        if (
+          changedProjectId &&
+          currentWorkflowProjectId === changedProjectId &&
+          (detail.action === 'archived' || detail.action === 'removed' || detail.project?.archived)
+        ) {
+          navigateToHermesHome()
+        }
+      }),
+    [currentWorkflowProjectId, navigateToHermesHome]
+  )
 
   // Index sessions by both their live id and their lineage-root id so a pin
   // stored as the pre-compression root resolves to the live continuation tip.
@@ -569,9 +595,7 @@ export function ChatSidebar({
 
       void Promise.resolve(onLoadMoreProfileSessions(profile))
         .catch(() => undefined)
-        .finally(() =>
-          setProfileLoadMorePending(({ [profile]: _done, ...rest }) => rest)
-        )
+        .finally(() => setProfileLoadMorePending(({ [profile]: _done, ...rest }) => rest))
     },
     [onLoadMoreProfileSessions]
   )
@@ -602,15 +626,17 @@ export function ChatSidebar({
       groups.set(key, group)
     }
 
-    return [...groups.values()]
-      .map(group => ({
-        ...group,
-        loadingMore: Boolean(profileLoadMorePending[group.id]),
-        onLoadMore: onLoadMoreProfileSessions ? () => loadMoreForProfileGroup(group.id) : undefined,
-        totalCount: Math.max(group.sessions.length, sessionProfileTotals[group.id] ?? 0)
-      }))
-      // default (root) first, then the rest alphabetically.
-      .sort((a, b) => (a.id === 'default' ? -1 : b.id === 'default' ? 1 : a.label.localeCompare(b.label)))
+    return (
+      [...groups.values()]
+        .map(group => ({
+          ...group,
+          loadingMore: Boolean(profileLoadMorePending[group.id]),
+          onLoadMore: onLoadMoreProfileSessions ? () => loadMoreForProfileGroup(group.id) : undefined,
+          totalCount: Math.max(group.sessions.length, sessionProfileTotals[group.id] ?? 0)
+        }))
+        // default (root) first, then the rest alphabetically.
+        .sort((a, b) => (a.id === 'default' ? -1 : b.id === 'default' ? 1 : a.label.localeCompare(b.label)))
+    )
   }, [
     showAllProfiles,
     agentSessions,
@@ -710,7 +736,7 @@ export function ChatSidebar({
         <SidebarGroup className="shrink-0 p-0 pb-2 pt-[calc(var(--titlebar-height)+0.375rem)]">
           <SidebarGroupContent>
             <SidebarMenu className="gap-px">
-              {SIDEBAR_NAV.map(item => {
+              {sidebarNav.map(item => {
                 const isInteractive = Boolean(item.action) || Boolean(item.route)
 
                 const active =
@@ -721,7 +747,7 @@ export function ChatSidebar({
                   (item.id === 'artifacts' && currentView === 'artifacts')
 
                 const isNewSession = item.id === 'new-session'
-                const label = item.id === 'workflows' ? workflowCopy.workflowSidebarLabel : item.label
+                const label = item.label
 
                 return (
                   <SidebarMenuItem key={item.id}>
@@ -771,9 +797,9 @@ export function ChatSidebar({
         {sidebarOpen && showSessionSections && (
           <div className="shrink-0 px-2 pb-1 pt-1">
             <SearchField
-              aria-label="Search sessions"
+              aria-label={copy.common.searchSessions}
               onChange={setSearchQuery}
-              placeholder="Search sessions…"
+              placeholder={copy.common.searchSessions}
               value={searchQuery}
             />
           </div>
@@ -785,10 +811,10 @@ export function ChatSidebar({
             contentClassName="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
             emptyState={
               <div className="grid min-h-24 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
-                No sessions match “{trimmedQuery}”.
+                {copy.common.noMatches}: “{trimmedQuery}”
               </div>
             }
-            label="Results"
+            label={copy.common.results}
             labelMeta={String(searchResults.length)}
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
@@ -805,11 +831,12 @@ export function ChatSidebar({
 
         {sidebarOpen && !trimmedQuery && (
           <SidebarWorkflowProjectsSection
+            emptyLabel={copy.workflow.workflowProjectsEmpty}
             loading={workflowProjectsLoading}
             onOpenProject={projectId =>
               onNavigate({
                 id: 'workflows',
-                label: workflowCopy.workflowSidebarLabel,
+                label: copy.workflow.workflowSidebarLabel,
                 route: `${WORKFLOWS_ROUTE}?project=${encodeURIComponent(projectId)}`,
                 icon: props => <Codicon name="graph" {...props} />
               })
@@ -817,6 +844,7 @@ export function ChatSidebar({
             onProjectRemoved={projectId => {
               setWorkflowProjects(projects => applyWorkflowProjectChange(projects, { action: 'removed', projectId }))
               unpinWorkflowProject(projectId)
+
               if (currentWorkflowProjectId === projectId) {
                 navigateToHermesHome()
               }
@@ -830,6 +858,7 @@ export function ChatSidebar({
                 navigateToHermesHome()
               }
             }}
+            onToggle={() => setWorkflowProjectsOpen(value => !value)}
             onTogglePin={projectId => {
               if (pinnedWorkflowProjectIdSet.has(projectId)) {
                 unpinWorkflowProject(projectId)
@@ -837,11 +866,9 @@ export function ChatSidebar({
                 pinWorkflowProject(projectId)
               }
             }}
-            onToggle={() => setWorkflowProjectsOpen(value => !value)}
             open={workflowProjectsOpen}
             pinnedProjectIds={pinnedWorkflowProjectIdSet}
             projects={sortedWorkflowProjects}
-            emptyLabel={workflowCopy.workflowProjectsEmpty}
           />
         )}
 
@@ -851,7 +878,7 @@ export function ChatSidebar({
             contentClassName="flex min-h-10 shrink-0 flex-col gap-px rounded-lg pb-2 pt-1"
             dndSensors={dndSensors}
             emptyState={<SidebarPinnedEmptyState />}
-            label="Pinned"
+            label={copy.common.pinned}
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
             onReorder={handlePinnedDragEnd}
@@ -901,9 +928,9 @@ export function ChatSidebar({
               // view (always grouped by profile), so hide the button (not the slot).
               <div className="grid size-6 shrink-0 place-items-center">
                 {!showAllProfiles && agentSessions.length > 0 ? (
-                  <Tip label={agentsGrouped ? 'Ungroup sessions' : 'Group by workspace'}>
+                  <Tip label={agentsGrouped ? copy.sidebar.ungroupSessions : copy.sidebar.groupByWorkspace}>
                     <Button
-                      aria-label={agentsGrouped ? 'Show sessions as a single list' : 'Group sessions by workspace'}
+                      aria-label={agentsGrouped ? copy.sidebar.showSessionsSingleList : copy.sidebar.groupSessions}
                       className={cn(
                         'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
                         agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
@@ -922,7 +949,7 @@ export function ChatSidebar({
                 ) : null}
               </div>
             }
-            label="Sessions"
+            label={copy.common.sessions}
             labelMeta={recentsMeta}
             onArchiveSession={onArchiveSession}
             onDeleteSession={onDeleteSession}
@@ -993,19 +1020,25 @@ function SidebarSessionSkeletons() {
   )
 }
 
-const SidebarAllPinnedState = () => (
-  <div className="grid min-h-24 place-items-center rounded-lg text-center text-xs text-(--ui-text-tertiary)">
-    Everything here is pinned. Unpin a chat to show it in recents.
-  </div>
-)
+function SidebarAllPinnedState() {
+  const copy = useAppCopy()
+
+  return (
+    <div className="grid min-h-24 place-items-center rounded-lg text-center text-xs text-(--ui-text-tertiary)">
+      {copy.sidebar.everythingPinned}
+    </div>
+  )
+}
 
 function SidebarPinnedEmptyState() {
+  const copy = useAppCopy()
+
   return (
     <div className="flex min-h-7 items-center gap-1.5 rounded-lg pl-2 text-[0.75rem] text-(--ui-text-tertiary)">
       <span className="grid w-3.5 shrink-0 place-items-center text-(--ui-text-quaternary)">
         <Codicon name="pin" size="0.75rem" />
       </span>
-      <span>Shift-click a chat to pin</span>
+      <span>{copy.sidebar.pinChatHint}</span>
     </div>
   )
 }
@@ -1033,9 +1066,17 @@ function SidebarWorkflowProjectsSection({
   pinnedProjectIds: Set<string>
   projects: WorkflowProject[]
 }) {
+  const copy = useAppCopy()
+  const language = useAppLanguage()
+
   return (
     <SidebarGroup className="shrink-0 p-0 pb-1">
-      <SidebarSectionHeader label="Workflows" meta={loading ? '...' : String(projects.length)} onToggle={onToggle} open={open} />
+      <SidebarSectionHeader
+        label={copy.workflow.workflowSidebarLabel}
+        meta={loading ? '...' : String(projects.length)}
+        onToggle={onToggle}
+        open={open}
+      />
       {open && (
         <SidebarGroupContent className="flex max-h-44 min-h-0 flex-col gap-px overflow-y-auto rounded-lg pb-2 pt-1">
           {loading && projects.length === 0 ? (
@@ -1056,9 +1097,14 @@ function SidebarWorkflowProjectsSection({
                   title={project.root}
                   type="button"
                 >
-                  <Codicon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" name={pinnedProjectIds.has(project.id) ? 'pin' : 'graph'} />
+                  <Codicon
+                    className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]"
+                    name={pinnedProjectIds.has(project.id) ? 'pin' : 'graph'}
+                  />
                   <span className="min-w-0 flex-1 truncate">{project.name}</span>
-                  <span className="shrink-0 text-[0.6875rem] text-(--ui-text-tertiary)">{relativeProjectTime(project)}</span>
+                  <span className="shrink-0 text-[0.6875rem] text-(--ui-text-tertiary)">
+                    {relativeProjectTime(project, language)}
+                  </span>
                 </button>
               </WorkflowProjectContextMenu>
             ))
@@ -1086,57 +1132,67 @@ function WorkflowProjectContextMenu({
   pinned: boolean
   project: WorkflowProject
 }) {
+  const copy = useAppCopy()
   const [renameOpen, setRenameOpen] = useState(false)
 
   const archiveProject = async () => {
     triggerHaptic('selection')
+
     try {
       const bundle = await updateWorkflowProject(project.id, { archived: true })
       onProjectUpdated(bundle.project)
-      notify({ durationMs: 2_000, kind: 'success', message: 'Workflow archived' })
+      notify({ durationMs: 2_000, kind: 'success', message: copy.sidebar.workflowArchived })
     } catch (err) {
-      notifyError(err, 'Archive workflow failed')
+      notifyError(err, copy.sidebar.archiveWorkflowFailed)
     }
   }
 
   const removeProject = async () => {
     triggerHaptic('warning')
-    const confirmed = window.confirm(`Remove "${project.name}" from Workflow history?\n\nThe project folder will not be deleted.`)
+    const confirmed = window.confirm(copy.sidebar.removeWorkflowConfirm(project.name))
+
     if (!confirmed) {
       return
     }
+
     onProjectRemoved(project.id)
+
     try {
       await removeWorkflowProjectFromHistory(project.id)
-      notify({ durationMs: 2_000, kind: 'success', message: 'Workflow removed from history' })
+      notify({ durationMs: 2_000, kind: 'success', message: copy.sidebar.workflowRemoved })
     } catch (err) {
       onProjectUpdated(project)
+
       if (pinned) {
         onTogglePin(project.id)
       }
-      notifyError(err, 'Remove workflow failed')
+
+      notifyError(err, copy.sidebar.removeWorkflowFailed)
     }
   }
 
   const exportProject = async () => {
     triggerHaptic('selection')
+
     try {
       const result = await exportWorkflowProject(project)
+
       if (!result.canceled) {
-        notify({ durationMs: 2_500, kind: 'success', message: 'Workflow exported' })
+        notify({ durationMs: 2_500, kind: 'success', message: copy.sidebar.workflowExported })
       }
     } catch (err) {
-      notifyError(err, 'Export workflow failed')
+      notifyError(err, copy.sidebar.exportWorkflowFailed)
     }
   }
 
   const copyText = async (value: string, label: string) => {
     triggerHaptic('selection')
+
     try {
       await writeClipboardText(value)
-      notify({ durationMs: 1_500, kind: 'success', message: `${label} copied` })
+      notify({ durationMs: 1_500, kind: 'success', message: copy.sidebar.copied(label) })
     } catch (err) {
-      notifyError(err, `Could not copy ${label.toLowerCase()}`)
+      notifyError(err, copy.sidebar.couldNotCopy(label))
     }
   }
 
@@ -1144,40 +1200,48 @@ function WorkflowProjectContextMenu({
     <>
       <ContextMenu>
         <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-        <ContextMenuContent aria-label={`Actions for ${project.name}`} className="w-48">
+        <ContextMenuContent aria-label={copy.sidebar.actionsFor(project.name)} className="w-48">
           <ContextMenuItem onSelect={() => onTogglePin(project.id)}>
             <Codicon name="pin" size="0.875rem" />
-            <span>{pinned ? 'Unpin' : 'Pin'}</span>
+            <span>{pinned ? copy.common.unpin : copy.common.pin}</span>
           </ContextMenuItem>
-          <ContextMenuItem onSelect={event => {
-            event.preventDefault()
-            void copyText(project.id, 'Workflow ID')
-          }}>
+          <ContextMenuItem
+            onSelect={event => {
+              event.preventDefault()
+              void copyText(project.id, copy.sidebar.workflowId)
+            }}
+          >
             <Codicon name="copy" size="0.875rem" />
-            <span>Copy ID</span>
+            <span>{copy.common.copyId}</span>
           </ContextMenuItem>
-          <ContextMenuItem onSelect={event => {
-            event.preventDefault()
-            void copyText(project.root, 'Workflow path')
-          }}>
+          <ContextMenuItem
+            onSelect={event => {
+              event.preventDefault()
+              void copyText(project.root, copy.sidebar.workflowPath)
+            }}
+          >
             <Codicon name="root-folder" size="0.875rem" />
-            <span>Copy Path</span>
+            <span>{copy.common.copyPath}</span>
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => void exportProject()}>
             <Codicon name="cloud-download" size="0.875rem" />
-            <span>Export</span>
+            <span>{copy.common.export}</span>
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => setRenameOpen(true)}>
             <Codicon name="edit" size="0.875rem" />
-            <span>Rename</span>
+            <span>{copy.common.rename}</span>
           </ContextMenuItem>
           <ContextMenuItem onSelect={() => void archiveProject()}>
             <Codicon name="archive" size="0.875rem" />
-            <span>Archive</span>
+            <span>{copy.common.archive}</span>
           </ContextMenuItem>
-          <ContextMenuItem className="text-destructive focus:text-destructive" onSelect={() => void removeProject()} variant="destructive">
+          <ContextMenuItem
+            className="text-destructive focus:text-destructive"
+            onSelect={() => void removeProject()}
+            variant="destructive"
+          >
             <Codicon name="trash" size="0.875rem" />
-            <span>Remove from history</span>
+            <span>{copy.sidebar.removeWorkflowFromHistory}</span>
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
@@ -1205,6 +1269,7 @@ function RenameWorkflowProjectDialog({
   open: boolean
   projectId: string
 }) {
+  const copy = useAppCopy()
   const [value, setValue] = useState(currentName)
   const [submitting, setSubmitting] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -1218,21 +1283,26 @@ function RenameWorkflowProjectDialog({
 
   const submit = async () => {
     const next = value.trim()
+
     if (!next || submitting) {
       return
     }
+
     if (next === currentName.trim()) {
       onOpenChange(false)
+
       return
     }
+
     setSubmitting(true)
+
     try {
       const bundle = await updateWorkflowProject(projectId, { name: next })
       onProjectUpdated(bundle.project)
-      notify({ durationMs: 2_000, kind: 'success', message: 'Workflow renamed' })
+      notify({ durationMs: 2_000, kind: 'success', message: copy.sidebar.workflowRenamed })
       onOpenChange(false)
     } catch (err) {
-      notifyError(err, 'Rename workflow failed')
+      notifyError(err, copy.sidebar.renameWorkflowFailed)
     } finally {
       setSubmitting(false)
     }
@@ -1242,8 +1312,8 @@ function RenameWorkflowProjectDialog({
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Rename workflow</DialogTitle>
-          <DialogDescription>Update the display name in the Workflow list. The folder path is not changed.</DialogDescription>
+          <DialogTitle>{copy.sidebar.renameWorkflow}</DialogTitle>
+          <DialogDescription>{copy.sidebar.renameWorkflowDescription}</DialogDescription>
         </DialogHeader>
         <Input
           autoFocus
@@ -1262,10 +1332,10 @@ function RenameWorkflowProjectDialog({
         />
         <DialogFooter>
           <Button disabled={submitting} onClick={() => onOpenChange(false)} type="button" variant="ghost">
-            Cancel
+            {copy.common.cancel}
           </Button>
           <Button disabled={submitting || !value.trim()} onClick={() => void submit()} type="button">
-            Save
+            {copy.common.save}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -1467,6 +1537,7 @@ function SidebarWorkspaceGroup({
   ref,
   ...rest
 }: SidebarWorkspaceGroupProps) {
+  const copy = useAppCopy()
   const isProfileGroup = group.mode === 'profile'
   const pageStep = isProfileGroup ? PROFILE_INITIAL_PAGE : WORKSPACE_PAGE
   const [open, setOpen] = useState(true)
@@ -1501,7 +1572,11 @@ function SidebarWorkspaceGroup({
           type="button"
         >
           {group.color ? (
-            <span aria-hidden="true" className="size-2 shrink-0 rounded-full" style={{ backgroundColor: group.color }} />
+            <span
+              aria-hidden="true"
+              className="size-2 shrink-0 rounded-full"
+              style={{ backgroundColor: group.color }}
+            />
           ) : null}
           <span className="truncate">{group.label}</span>
           <SidebarCount>
@@ -1513,9 +1588,9 @@ function SidebarWorkspaceGroup({
           />
         </button>
         {(onNewSession || isProfileGroup) && (
-          <Tip label={`New session in ${group.label}`}>
+          <Tip label={copy.sidebar.newSessionIn(group.label)}>
             <button
-              aria-label={`New session in ${group.label}`}
+              aria-label={copy.sidebar.newSessionIn(group.label)}
               className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
               // Profile groups start a fresh session in that profile but keep the
               // all-profiles browse view (newSessionInProfile leaves the scope
@@ -1530,7 +1605,7 @@ function SidebarWorkspaceGroup({
         {reorderable && (
           <span
             {...dragHandleProps}
-            aria-label={`Reorder workspace ${group.label}`}
+            aria-label={copy.sidebar.reorderWorkspace(group.label)}
             className="ml-auto -my-0.5 grid w-4 shrink-0 cursor-grab touch-none place-items-center self-stretch overflow-hidden active:cursor-grabbing"
             onClick={event => event.stopPropagation()}
           >
@@ -1550,11 +1625,15 @@ function SidebarWorkspaceGroup({
           {renderRows(visibleSessions)}
           {hiddenCount > 0 &&
             (isProfileGroup ? (
-              <SidebarLoadMoreRow loading={Boolean(group.loadingMore)} onClick={handleProfileLoadMore} step={nextCount} />
+              <SidebarLoadMoreRow
+                loading={Boolean(group.loadingMore)}
+                onClick={handleProfileLoadMore}
+                step={nextCount}
+              />
             ) : (
-              <Tip label={`Show ${nextCount} more in ${group.label}`}>
+              <Tip label={copy.sidebar.showMoreIn(nextCount, group.label)}>
                 <button
-                  aria-label={`Show ${nextCount} more in ${group.label}`}
+                  aria-label={copy.sidebar.showMoreIn(nextCount, group.label)}
                   className="ml-auto grid size-5 place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
                   onClick={() => setVisibleCount(count => count + WORKSPACE_PAGE)}
                   type="button"
@@ -1605,7 +1684,8 @@ interface SidebarLoadMoreRowProps {
 }
 
 function SidebarLoadMoreRow({ loading, onClick, step }: SidebarLoadMoreRowProps) {
-  const label = loading ? 'Loading…' : step > 0 ? `Load ${step} more` : 'Load more'
+  const copy = useAppCopy()
+  const label = loading ? copy.sidebar.loading : step > 0 ? copy.sidebar.loadMoreCount(step) : copy.sidebar.loadMore
 
   return (
     <button

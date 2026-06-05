@@ -4,6 +4,7 @@ import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { deleteEnvVar, getToolsetConfig, revealEnvVar, selectToolsetProvider, setEnvVar } from '@/hermes'
+import { useAppCopy } from '@/i18n'
 import { Check, Loader2, Save } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -35,6 +36,7 @@ interface EnvVarFieldProps {
 }
 
 function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
+  const copy = useAppCopy().settings
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState('')
   const [revealed, setRevealed] = useState<string | null>(null)
@@ -52,16 +54,16 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
       setEditing(false)
       setValue('')
       onSaved(envVar.key)
-      notify({ kind: 'success', title: 'Credential saved', message: `${envVar.key} updated.` })
+      notify({ kind: 'success', title: copy.credentialSaved, message: copy.envUpdated(envVar.key) })
     } catch (err) {
-      notifyError(err, `Failed to save ${envVar.key}`)
+      notifyError(err, copy.failedToSaveEnv(envVar.key))
     } finally {
       setBusy(false)
     }
   }
 
   async function handleClear() {
-    if (!window.confirm(`Remove ${envVar.key} from .env?`)) {
+    if (!window.confirm(copy.removeEnvConfirm(envVar.key))) {
       return
     }
 
@@ -71,9 +73,9 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
       await deleteEnvVar(envVar.key)
       setRevealed(null)
       onCleared(envVar.key)
-      notify({ kind: 'success', title: 'Credential removed', message: `${envVar.key} removed.` })
+      notify({ kind: 'success', title: copy.credentialRemoved, message: copy.envRemoved(envVar.key) })
     } catch (err) {
-      notifyError(err, `Failed to remove ${envVar.key}`)
+      notifyError(err, copy.failedToRemoveEnv(envVar.key))
     } finally {
       setBusy(false)
     }
@@ -90,7 +92,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
       const result = await revealEnvVar(envVar.key)
       setRevealed(result.value)
     } catch (err) {
-      notifyError(err, `Failed to reveal ${envVar.key}`)
+      notifyError(err, copy.failedToRevealEnv(envVar.key))
     }
   }
 
@@ -102,7 +104,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
             <span className="font-mono text-xs font-medium">{envVar.key}</span>
             <Pill tone={isSet ? 'primary' : 'muted'}>
               {isSet && <Check className="size-3" />}
-              {isSet ? 'Set' : 'Not set'}
+              {isSet ? copy.set : copy.notSet}
             </Pill>
           </div>
           {envVar.prompt && envVar.prompt !== envVar.key && (
@@ -143,10 +145,10 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
           />
           <Button disabled={busy || !value} onClick={() => void handleSave()} size="sm">
             {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Save />}
-            Save
+            {copy.save}
           </Button>
           <Button onClick={() => setEditing(false)} size="sm" variant="text">
-            Cancel
+            {copy.cancel}
           </Button>
         </div>
       )}
@@ -155,6 +157,7 @@ function EnvVarField({ envVar, isSet, onSaved, onCleared }: EnvVarFieldProps) {
 }
 
 export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfigPanelProps) {
+  const copy = useAppCopy().settings
   const [cfg, setCfg] = useState<ToolsetConfig | null>(null)
   const [loading, setLoading] = useState(true)
   const [selecting, setSelecting] = useState<string | null>(null)
@@ -178,11 +181,11 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
 
       setEnvState(seeded)
     } catch (err) {
-      notifyError(err, 'Tool configuration failed to load')
+      notifyError(err, copy.toolConfigFailedToLoad)
     } finally {
       setLoading(false)
     }
-  }, [toolset])
+  }, [copy.toolConfigFailedToLoad, toolset])
 
   useEffect(() => {
     void refresh()
@@ -215,10 +218,10 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
 
     try {
       await selectToolsetProvider(toolset, provider.name)
-      notify({ kind: 'success', title: 'Provider selected', message: `${provider.name} is now active.` })
+      notify({ kind: 'success', title: copy.providerSelected, message: copy.providerNowActive(provider.name) })
       onConfiguredChange?.()
     } catch (err) {
-      notifyError(err, `Failed to select ${provider.name}`)
+      notifyError(err, copy.failedToSelectProvider(provider.name))
     } finally {
       setSelecting(null)
     }
@@ -235,18 +238,18 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
     }
 
     if (!cfg.has_category) {
-      return 'This toolset has no provider options — enable it and it works with your current setup.'
+      return copy.toolsetNoProviderOptions
     }
 
     if (providers.length === 0) {
-      return 'No providers are available for this toolset right now.'
+      return copy.toolsetNoProvidersAvailable
     }
 
     return null
-  }, [cfg, loading, providers.length])
+  }, [cfg, copy.toolsetNoProviderOptions, copy.toolsetNoProvidersAvailable, loading, providers.length])
 
   if (loading) {
-    return <PageLoader className="min-h-32" label="Loading configuration" />
+    return <PageLoader className="min-h-32" label={copy.loadingConfiguration} />
   }
 
   if (emptyMessage) {
@@ -276,7 +279,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                 {configured && (
                   <Pill tone="primary">
                     <Check className="size-3" />
-                    Ready
+                    {copy.ready}
                   </Pill>
                 )}
               </span>
@@ -287,12 +290,10 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
               <div className="grid gap-2 bg-muted/20 p-3">
                 {provider.tag && <p className="text-[0.72rem] text-muted-foreground">{provider.tag}</p>}
                 {provider.requires_nous_auth && (
-                  <p className="text-[0.72rem] text-muted-foreground">
-                    Included with a Nous subscription — sign in to Nous Portal to activate.
-                  </p>
+                  <p className="text-[0.72rem] text-muted-foreground">{copy.nousSubscriptionIncluded}</p>
                 )}
                 {provider.env_vars.length === 0 ? (
-                  <p className="text-[0.72rem] text-muted-foreground">No API key required.</p>
+                  <p className="text-[0.72rem] text-muted-foreground">{copy.noApiKeyRequired}</p>
                 ) : (
                   provider.env_vars.map(ev => (
                     <EnvVarField
@@ -305,10 +306,7 @@ export function ToolsetConfigPanel({ toolset, onConfiguredChange }: ToolsetConfi
                   ))
                 )}
                 {provider.post_setup && (
-                  <p className="text-[0.72rem] text-muted-foreground">
-                    This provider needs an extra setup step ({provider.post_setup}). Run it from the CLI with{' '}
-                    <code className="font-mono">hermes tools</code> for now.
-                  </p>
+                  <p className="text-[0.72rem] text-muted-foreground">{copy.postSetupCli(provider.post_setup)}</p>
                 )}
               </div>
             )}

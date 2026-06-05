@@ -17,6 +17,7 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
+import { useAppCopy } from '@/i18n'
 import { displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
 import {
@@ -50,6 +51,7 @@ interface ProviderGroup {
 }
 
 export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: ModelMenuPanelProps) {
+  const copy = useAppCopy().modelPicker
   const [search, setSearch] = useState('')
   // Reactive session state is read from the stores here (not drilled in), so
   // toggling effort/fast/model re-renders this panel in place without forcing
@@ -95,9 +97,9 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   return (
     <>
       <DropdownMenuSearch
-        aria-label="Search models"
+        aria-label={copy.searchModels}
         onValueChange={setSearch}
-        placeholder="Search models"
+        placeholder={copy.searchModels}
         value={search}
       />
 
@@ -122,7 +124,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
         </DropdownMenuItem>
       ) : groups.length === 0 ? (
         <DropdownMenuItem className={dropdownMenuRow} disabled>
-          No models found
+          {copy.noModelsFound}
         </DropdownMenuItem>
       ) : (
         <div className="max-h-80 overflow-y-auto py-0.5">
@@ -218,7 +220,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
         className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
         onSelect={() => setModelVisibilityOpen(true)}
       >
-        Edit Models…
+        {copy.editModels}
       </DropdownMenuItem>
     </>
   )

@@ -2,6 +2,7 @@ import { type ReactNode, useEffect } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { useAppCopy } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 
@@ -17,11 +18,14 @@ interface OverlayViewProps {
 export function OverlayView({
   children,
   onClose,
-  closeLabel = 'Close',
+  closeLabel,
   contentClassName,
   headerContent,
   rootClassName
 }: OverlayViewProps) {
+  const copy = useAppCopy()
+  const resolvedCloseLabel = closeLabel ?? copy.common.close
+
   const closeOverlay = () => {
     triggerHaptic('close')
     onClose()
@@ -70,7 +74,7 @@ export function OverlayView({
           )}
 
           <Button
-            aria-label={closeLabel}
+            aria-label={resolvedCloseLabel}
             className="pointer-events-auto absolute right-3 top-[calc(0.1875rem+var(--titlebar-height)/2)] -translate-y-1/2 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground [-webkit-app-region:no-drag]"
             onClick={closeOverlay}
             size="icon-titlebar"

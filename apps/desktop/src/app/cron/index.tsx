@@ -27,6 +27,7 @@ import {
   triggerCronJob,
   updateCronJob
 } from '@/hermes'
+import { useAppCopy } from '@/i18n'
 import { AlertTriangle, Clock } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
 
@@ -36,6 +37,7 @@ import { OverlayView } from '../overlays/overlay-view'
 import { CronJobActionsMenu, CronJobActionsTrigger } from './cron-job-actions-menu'
 
 const DEFAULT_DELIVER = 'local'
+type CronCopy = ReturnType<typeof useAppCopy>['cron']
 
 const DELIVERY_OPTIONS: ReadonlyArray<{ label: string; value: string }> = [
   { label: 'This desktop', value: 'local' },
@@ -111,7 +113,7 @@ function jobPrompt(job: CronJob): string {
   return asText(job.prompt)
 }
 
-function jobTitle(job: CronJob): string {
+function jobTitle(job: CronJob, copy: CronCopy): string {
   const name = jobName(job)
 
   if (name) {
@@ -130,7 +132,7 @@ function jobTitle(job: CronJob): string {
     return truncate(script, 60)
   }
 
-  return job.id || 'Cron job'
+  return job.id || copy.fallbackJobTitle
 }
 
 function jobScheduleDisplay(job: CronJob): string {
@@ -155,19 +157,8 @@ function cronParts(expr: string): null | string[] {
   return parts.length === 5 ? parts : null
 }
 
-function dayName(value: string): string {
-  const names: Record<string, string> = {
-    '0': 'Sunday',
-    '1': 'Monday',
-    '2': 'Tuesday',
-    '3': 'Wednesday',
-    '4': 'Thursday',
-    '5': 'Friday',
-    '6': 'Saturday',
-    '7': 'Sunday'
-  }
-
-  return names[value] ?? `day ${value}`
+function dayName(copy: CronCopy, value: string): string {
+  return copy.dayName(value)
 }
 
 function formatCronTime(minute: string, hour: string): string {
@@ -243,36 +234,108 @@ function scheduleOptionForExpr(expr: string): ScheduleOption {
   return SCHEDULE_OPTIONS[SCHEDULE_OPTIONS.length - 1]
 }
 
-function scheduleSummary(option: ScheduleOption, expr: string): string {
+function scheduleHint(copy: CronCopy, value: string): string {
+  switch (value) {
+    case 'daily':
+      return copy.schedules.daily.hint
+
+    case 'weekdays':
+      return copy.schedules.weekdays.hint
+
+    case 'weekly':
+      return copy.schedules.weekly.hint
+
+    case 'monthly':
+      return copy.schedules.monthly.hint
+
+    case 'hourly':
+      return copy.schedules.hourly.hint
+
+    case 'every-15-minutes':
+      return copy.schedules.every15Minutes.hint
+
+    default:
+      return copy.schedules.custom.hint
+  }
+}
+
+function scheduleLabel(copy: CronCopy, value: string): string {
+  switch (value) {
+    case 'daily':
+      return copy.schedules.daily.label
+
+    case 'weekdays':
+      return copy.schedules.weekdays.label
+
+    case 'weekly':
+      return copy.schedules.weekly.label
+
+    case 'monthly':
+      return copy.schedules.monthly.label
+
+    case 'hourly':
+      return copy.schedules.hourly.label
+
+    case 'every-15-minutes':
+      return copy.schedules.every15Minutes.label
+
+    default:
+      return copy.schedules.custom.label
+  }
+}
+
+function deliveryLabel(copy: CronCopy, value: string): string {
+  switch (value) {
+    case 'local':
+      return copy.delivery.local
+
+    case 'telegram':
+      return copy.delivery.telegram
+
+    case 'discord':
+      return copy.delivery.discord
+
+    case 'slack':
+      return copy.delivery.slack
+
+    case 'email':
+      return copy.delivery.email
+
+    default:
+      return value
+  }
+}
+
+function scheduleSummary(copy: CronCopy, option: ScheduleOption, expr: string): string {
   const parts = cronParts(expr)
 
   if (!parts) {
-    return option.hint
+    return scheduleHint(copy, option.value)
   }
 
   const [minute, hour, dayOfMonth, , dayOfWeek] = parts
 
   if (option.value === 'daily') {
-    return `Every day at ${formatCronTime(minute, hour)}`
+    return copy.everyDayAt(formatCronTime(minute, hour))
   }
 
   if (option.value === 'weekdays') {
-    return `Weekdays at ${formatCronTime(minute, hour)}`
+    return copy.weekdaysAt(formatCronTime(minute, hour))
   }
 
   if (option.value === 'weekly') {
-    return `Every ${dayName(dayOfWeek)} at ${formatCronTime(minute, hour)}`
+    return copy.everyDayNameAt(dayName(copy, dayOfWeek), formatCronTime(minute, hour))
   }
 
   if (option.value === 'monthly') {
-    return `Monthly on day ${dayOfMonth} at ${formatCronTime(minute, hour)}`
+    return copy.monthlyOnDayAt(dayOfMonth, formatCronTime(minute, hour))
   }
 
   if (option.value === 'hourly') {
-    return minute === '0' ? 'At the top of every hour' : `Every hour at :${minute.padStart(2, '0')}`
+    return minute === '0' ? copy.topOfEveryHour : copy.everyHourAt(minute.padStart(2, '0'))
   }
 
-  return option.hint
+  return scheduleHint(copy, option.value)
 }
 
 function formatTime(iso?: null | string): string {
@@ -289,15 +352,15 @@ function formatTime(iso?: null | string): string {
   return date.toLocaleString()
 }
 
-function matchesQuery(job: CronJob, q: string): boolean {
+function matchesQuery(job: CronJob, q: string, copy: CronCopy): boolean {
   if (!q) {
     return true
   }
 
   const needle = q.toLowerCase()
 
-  return [jobTitle(job), jobPrompt(job), jobScheduleDisplay(job), jobScheduleExpr(job), jobDeliver(job)].some(value =>
-    value.toLowerCase().includes(needle)
+  return [jobTitle(job, copy), jobPrompt(job), jobScheduleDisplay(job), jobScheduleExpr(job), jobDeliver(job)].some(
+    value => value.toLowerCase().includes(needle)
   )
 }
 
@@ -306,6 +369,8 @@ interface CronViewProps {
 }
 
 export function CronView({ onClose }: CronViewProps) {
+  const appCopy = useAppCopy()
+  const copy = appCopy.cron
   const [jobs, setJobs] = useState<CronJob[] | null>(null)
   const [query, setQuery] = useState('')
   const [busyJobId, setBusyJobId] = useState<null | string>(null)
@@ -318,9 +383,9 @@ export function CronView({ onClose }: CronViewProps) {
       const result = await getCronJobs()
       setJobs(result)
     } catch (err) {
-      notifyError(err, 'Failed to load cron jobs')
+      notifyError(err, copy.failedLoadJobs)
     }
-  }, [])
+  }, [copy.failedLoadJobs])
 
   useRefreshHotkey(refresh)
 
@@ -333,8 +398,10 @@ export function CronView({ onClose }: CronViewProps) {
       return []
     }
 
-    return jobs.filter(job => matchesQuery(job, query.trim())).sort((a, b) => jobTitle(a).localeCompare(jobTitle(b)))
-  }, [jobs, query])
+    return jobs
+      .filter(job => matchesQuery(job, query.trim(), copy))
+      .sort((a, b) => jobTitle(a, copy).localeCompare(jobTitle(b, copy)))
+  }, [copy, jobs, query])
 
   const enabledCount = jobs?.filter(job => job.enabled).length ?? 0
   const totalCount = jobs?.length ?? 0
@@ -348,11 +415,11 @@ export function CronView({ onClose }: CronViewProps) {
       setJobs(current => (current ? current.map(row => (row.id === job.id ? updated : row)) : current))
       notify({
         kind: 'success',
-        title: isPaused ? 'Cron resumed' : 'Cron paused',
-        message: truncate(jobTitle(job), 60)
+        title: isPaused ? copy.resumed : copy.paused,
+        message: truncate(jobTitle(job, copy), 60)
       })
     } catch (err) {
-      notifyError(err, 'Failed to update cron job')
+      notifyError(err, copy.failedUpdateJob)
     } finally {
       setBusyJobId(null)
     }
@@ -364,9 +431,9 @@ export function CronView({ onClose }: CronViewProps) {
     try {
       const updated = await triggerCronJob(job.id)
       setJobs(current => (current ? current.map(row => (row.id === job.id ? updated : row)) : current))
-      notify({ kind: 'success', title: 'Cron triggered', message: truncate(jobTitle(job), 60) })
+      notify({ kind: 'success', title: copy.triggered, message: truncate(jobTitle(job, copy), 60) })
     } catch (err) {
-      notifyError(err, 'Failed to trigger cron job')
+      notifyError(err, copy.failedTriggerJob)
     } finally {
       setBusyJobId(null)
     }
@@ -382,7 +449,7 @@ export function CronView({ onClose }: CronViewProps) {
       })
 
       setJobs(current => (current ? [...current, created] : [created]))
-      notify({ kind: 'success', title: 'Cron created', message: truncate(jobTitle(created), 60) })
+      notify({ kind: 'success', title: copy.created, message: truncate(jobTitle(created, copy), 60) })
     } else if (editor.mode === 'edit') {
       const updated = await updateCronJob(editor.job.id, {
         prompt: values.prompt,
@@ -392,41 +459,37 @@ export function CronView({ onClose }: CronViewProps) {
       })
 
       setJobs(current => (current ? current.map(row => (row.id === updated.id ? updated : row)) : current))
-      notify({ kind: 'success', title: 'Cron updated', message: truncate(jobTitle(updated), 60) })
+      notify({ kind: 'success', title: copy.updated, message: truncate(jobTitle(updated, copy), 60) })
     }
 
     setEditor({ mode: 'closed' })
   }
 
   return (
-    <OverlayView closeLabel="Close cron" onClose={onClose}>
+    <OverlayView closeLabel={copy.closeCron} onClose={onClose}>
       <div className="flex min-h-0 flex-1 flex-col pt-[calc(var(--titlebar-height)+0.5rem)]">
         {totalCount > 0 && (
           <div className="mx-auto flex w-full max-w-4xl items-center gap-2 px-4 pb-2">
             <SearchField
               containerClassName="max-w-[60vw]"
               onChange={setQuery}
-              placeholder="Search cron jobs…"
+              placeholder={copy.searchPlaceholder}
               value={query}
             />
           </div>
         )}
         {!jobs ? (
-          <PageLoader label="Loading cron jobs..." />
+          <PageLoader label={copy.loadingJobs} />
         ) : visibleJobs.length === 0 ? (
           // Empty state owns the primary "create" CTA — we used to also have
           // one in the filters bar but it was redundant. Only show the button
           // when there are zero jobs total; the search-empty case ("No
           // matches") just asks the user to broaden their query.
           <EmptyState
-            actionLabel={totalCount === 0 ? 'Create first cron' : undefined}
-            description={
-              totalCount === 0
-                ? 'Schedule a prompt to run on a cron expression. Hermes will run it and deliver results to the destination you pick.'
-                : 'Try a broader search query.'
-            }
+            actionLabel={totalCount === 0 ? copy.createFirst : undefined}
+            description={totalCount === 0 ? copy.emptyDescription : copy.noMatchesDescription}
             onAction={totalCount === 0 ? () => setEditor({ mode: 'create' }) : undefined}
-            title={totalCount === 0 ? 'No scheduled jobs yet' : 'No matches'}
+            title={totalCount === 0 ? copy.emptyTitle : copy.noMatches}
           />
         ) : (
           <div className="mx-auto w-full max-w-4xl min-h-0 flex-1 overflow-y-auto px-4 py-3">
@@ -436,17 +499,18 @@ export function CronView({ onClose }: CronViewProps) {
                 edit/pause/trigger/delete). */}
             <div className="mb-2 flex items-center justify-between">
               <span className="text-[0.7rem] uppercase tracking-wide text-muted-foreground">
-                {enabledCount}/{totalCount} active
+                {copy.activeCount(enabledCount, totalCount)}
               </span>
               <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
                 <Codicon name="add" />
-                New cron
+                {copy.newCron}
               </Button>
             </div>
             <div>
               {visibleJobs.map(job => (
                 <CronJobRow
                   busy={busyJobId === job.id}
+                  copy={copy}
                   job={job}
                   key={job.id}
                   onDelete={() => setPendingDelete(job)}
@@ -459,22 +523,20 @@ export function CronView({ onClose }: CronViewProps) {
           </div>
         )}
       </div>
-      <CronEditorDialog editor={editor} onClose={() => setEditor({ mode: 'closed' })} onSave={handleEditorSave} />
+      <CronEditorDialog
+        appCopy={appCopy}
+        copy={copy}
+        editor={editor}
+        onClose={() => setEditor({ mode: 'closed' })}
+        onSave={handleEditorSave}
+      />
 
       <ConfirmDialog
-        busyLabel="Deleting…"
-        confirmLabel="Delete"
-        description={
-          pendingDelete ? (
-            <>
-              This will remove{' '}
-              <span className="font-medium text-foreground">{truncate(jobTitle(pendingDelete), 60)}</span> permanently.
-              It will stop firing immediately.
-            </>
-          ) : null
-        }
+        busyLabel={copy.deleteBusy}
+        confirmLabel={copy.deleteConfirm}
+        description={pendingDelete ? copy.deleteDescription(truncate(jobTitle(pendingDelete, copy), 60)) : null}
         destructive
-        doneLabel="Deleted"
+        doneLabel={copy.deletedDone}
         onClose={() => setPendingDelete(null)}
         onConfirm={async () => {
           if (!pendingDelete) {
@@ -483,10 +545,10 @@ export function CronView({ onClose }: CronViewProps) {
 
           await deleteCronJob(pendingDelete.id)
           setJobs(current => (current ? current.filter(row => row.id !== pendingDelete.id) : current))
-          notify({ kind: 'success', message: truncate(jobTitle(pendingDelete), 60), title: 'Cron deleted' })
+          notify({ kind: 'success', message: truncate(jobTitle(pendingDelete, copy), 60), title: copy.deleted })
         }}
         open={pendingDelete !== null}
-        title="Delete cron job?"
+        title={copy.deleteTitle}
       />
     </OverlayView>
   )
@@ -494,6 +556,7 @@ export function CronView({ onClose }: CronViewProps) {
 
 function CronJobRow({
   busy,
+  copy,
   job,
   onDelete,
   onEdit,
@@ -501,6 +564,7 @@ function CronJobRow({
   onTrigger
 }: {
   busy: boolean
+  copy: CronCopy
   job: CronJob
   onDelete: () => void
   onEdit: () => void
@@ -521,7 +585,7 @@ function CronJobRow({
         type="button"
       >
         <div className="flex flex-wrap items-center gap-2">
-          <span className="truncate text-sm font-medium">{jobTitle(job)}</span>
+          <span className="truncate text-sm font-medium">{jobTitle(job, copy)}</span>
           <Badge className="capitalize" variant={STATE_VARIANT[state] ?? 'muted'}>
             {state}
           </Badge>
@@ -537,8 +601,8 @@ function CronJobRow({
             <Clock className="size-3" />
             {jobScheduleDisplay(job)}
           </span>
-          <span>Last: {formatTime(job.last_run_at)}</span>
-          <span>Next: {formatTime(job.next_run_at)}</span>
+          <span>{copy.lastRun(formatTime(job.last_run_at))}</span>
+          <span>{copy.nextRun(formatTime(job.next_run_at))}</span>
         </div>
         {job.last_error && (
           <p className="mt-1 inline-flex items-start gap-1 text-[0.68rem] text-destructive">
@@ -551,17 +615,19 @@ function CronJobRow({
       <div className="flex shrink-0 items-center">
         <CronJobActionsMenu
           busy={busy}
+          copy={copy}
           isPaused={isPaused}
           onDelete={onDelete}
           onEdit={onEdit}
           onPauseResume={onPauseResume}
           onTrigger={onTrigger}
-          title={jobTitle(job)}
+          title={jobTitle(job, copy)}
         >
           <CronJobActionsTrigger
             className="text-muted-foreground hover:text-foreground"
+            copy={copy}
             onClick={event => event.stopPropagation()}
-            title={jobTitle(job)}
+            title={jobTitle(job, copy)}
           />
         </CronJobActionsMenu>
       </div>
@@ -597,10 +663,14 @@ function EmptyState({
 }
 
 function CronEditorDialog({
+  appCopy,
+  copy,
   editor,
   onClose,
   onSave
 }: {
+  appCopy: ReturnType<typeof useAppCopy>
+  copy: CronCopy
   editor: EditorState
   onClose: () => void
   onSave: (values: EditorValues) => Promise<void>
@@ -647,7 +717,7 @@ function CronEditorDialog({
     }
   }
 
-  const scheduleHint = scheduleSummary(selectedScheduleOption, schedule)
+  const resolvedScheduleHint = scheduleSummary(copy, selectedScheduleOption, schedule)
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
@@ -655,7 +725,7 @@ function CronEditorDialog({
     const trimmedSchedule = schedule.trim()
 
     if (!trimmedPrompt || !trimmedSchedule) {
-      setError('Prompt and schedule are required.')
+      setError(copy.promptAndScheduleRequired)
 
       return
     }
@@ -671,7 +741,7 @@ function CronEditorDialog({
         schedule: trimmedSchedule
       })
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save cron job')
+      setError(err instanceof Error ? err.message : copy.failedSaveJob)
     } finally {
       setSaving(false)
     }
@@ -681,37 +751,33 @@ function CronEditorDialog({
     <Dialog onOpenChange={value => !value && !saving && onClose()} open={open}>
       <DialogContent className="max-w-lg">
         <DialogHeader>
-          <DialogTitle>{isEdit ? 'Edit cron job' : 'New cron job'}</DialogTitle>
-          <DialogDescription>
-            {isEdit
-              ? 'Update the schedule, prompt, or delivery target. Changes apply on next run.'
-              : 'Schedule a prompt to run automatically. Use cron syntax or a natural phrase like "every 15 minutes".'}
-          </DialogDescription>
+          <DialogTitle>{isEdit ? copy.editTitle : copy.createTitle}</DialogTitle>
+          <DialogDescription>{isEdit ? copy.editDescription : copy.createDescription}</DialogDescription>
         </DialogHeader>
 
         <form className="grid gap-4" onSubmit={handleSubmit}>
-          <Field htmlFor="cron-name" label="Name" optional>
+          <Field htmlFor="cron-name" label={copy.name} optional optionalLabel={copy.optional}>
             <Input
               autoFocus
               id="cron-name"
               onChange={event => setName(event.target.value)}
-              placeholder="Morning briefing"
+              placeholder={copy.namePlaceholder}
               value={name}
             />
           </Field>
 
-          <Field htmlFor="cron-prompt" label="Prompt">
+          <Field htmlFor="cron-prompt" label={copy.prompt}>
             <Textarea
               className="min-h-24 font-mono"
               id="cron-prompt"
               onChange={event => setPrompt(event.target.value)}
-              placeholder="Summarize my unread Slack threads and email me the top 5..."
+              placeholder={copy.promptPlaceholder}
               value={prompt}
             />
           </Field>
 
           <div className="grid items-start gap-4 sm:grid-cols-2">
-            <Field htmlFor="cron-frequency" label="Frequency">
+            <Field htmlFor="cron-frequency" label={copy.frequency}>
               <Select onValueChange={handleSchedulePresetChange} value={schedulePreset}>
                 <SelectTrigger id="cron-frequency">
                   <SelectValue />
@@ -719,14 +785,14 @@ function CronEditorDialog({
                 <SelectContent>
                   {SCHEDULE_OPTIONS.map(option => (
                     <SelectItem key={option.value} value={option.value}>
-                      {option.label}
+                      {scheduleLabel(copy, option.value)}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </Field>
 
-            <Field htmlFor="cron-deliver" label="Deliver to">
+            <Field htmlFor="cron-deliver" label={copy.deliverTo}>
               <Select onValueChange={setDeliver} value={deliver}>
                 <SelectTrigger id="cron-deliver">
                   <SelectValue />
@@ -734,7 +800,7 @@ function CronEditorDialog({
                 <SelectContent>
                   {DELIVERY_OPTIONS.map(option => (
                     <SelectItem key={option.value} value={option.value}>
-                      {option.label}
+                      {deliveryLabel(copy, option.value)}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -743,20 +809,20 @@ function CronEditorDialog({
           </div>
 
           {schedulePreset === 'custom' ? (
-            <Field htmlFor="cron-schedule" label="Custom schedule">
+            <Field htmlFor="cron-schedule" label={copy.customSchedule}>
               <Input
                 className="font-mono"
                 id="cron-schedule"
                 onChange={event => setSchedule(event.target.value)}
-                placeholder="0 9 * * * or weekdays at 9am"
+                placeholder={copy.customSchedulePlaceholder}
                 value={schedule}
               />
-              <FieldHint>Cron expression, or phrases like "every hour" or "weekdays at 9am".</FieldHint>
+              <FieldHint>{copy.customScheduleHint}</FieldHint>
             </Field>
           ) : (
             <div className="rounded-md border border-border/60 bg-muted/30 px-3 py-2">
               <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                <span className="font-medium text-foreground">{scheduleHint}</span>
+                <span className="font-medium text-foreground">{resolvedScheduleHint}</span>
                 <span className="font-mono text-muted-foreground">{schedule}</span>
               </div>
             </div>
@@ -771,10 +837,10 @@ function CronEditorDialog({
 
           <DialogFooter>
             <Button disabled={saving} onClick={onClose} type="button" variant="outline">
-              Cancel
+              {appCopy.common.cancel}
             </Button>
             <Button disabled={saving} type="submit">
-              {saving ? 'Saving...' : isEdit ? 'Save changes' : 'Create cron'}
+              {saving ? copy.saving : isEdit ? copy.saveChanges : copy.createCron}
             </Button>
           </DialogFooter>
         </form>
@@ -787,18 +853,22 @@ function Field({
   children,
   htmlFor,
   label,
-  optional
+  optional,
+  optionalLabel
 }: {
   children: React.ReactNode
   htmlFor: string
   label: string
   optional?: boolean
+  optionalLabel?: string
 }) {
   return (
     <div className="grid gap-1.5">
       <label className="flex items-baseline gap-2 text-xs font-medium text-foreground" htmlFor={htmlFor}>
         {label}
-        {optional && <span className="text-[0.65rem] font-normal text-muted-foreground">Optional</span>}
+        {optional && optionalLabel && (
+          <span className="text-[0.65rem] font-normal text-muted-foreground">{optionalLabel}</span>
+        )}
       </label>
       {children}
     </div>

@@ -9,6 +9,7 @@ import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Tip } from '@/components/ui/tooltip'
 import { getActionStatus, getLogs, getStatus, getUsageAnalytics, restartGateway, updateHermes } from '@/hermes'
 import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
+import { useAppCopy } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { Activity, AlertCircle, BarChart3, type IconComponent, Pin } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
@@ -34,18 +35,6 @@ interface CommandCenterViewProps {
   onClose: () => void
   onDeleteSession: (sessionId: string) => Promise<void>
   onOpenSession: (sessionId: string) => void
-}
-
-const SECTION_LABELS: Record<CommandCenterSection, string> = {
-  sessions: 'Sessions',
-  system: 'System',
-  usage: 'Usage'
-}
-
-const SECTION_DESCRIPTIONS: Record<CommandCenterSection, string> = {
-  sessions: 'Search and manage sessions',
-  system: 'Status, logs, and system actions',
-  usage: 'Token, cost, and skill activity over time'
 }
 
 const SECTION_ICONS: Record<CommandCenterSection, IconComponent> = {
@@ -124,6 +113,7 @@ function EmptyPanel({ action, description, title }: { action?: ReactNode; descri
 }
 
 export function CommandCenterView({ initialSection, onClose, onDeleteSession, onOpenSession }: CommandCenterViewProps) {
+  const copy = useAppCopy()
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
 
@@ -254,7 +244,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
         if (!nextStatus) {
           const pendingStatus = {
             exit_code: null,
-            lines: ['Action started, waiting for status...'],
+            lines: [copy.commandCenter.actionStartedWaiting],
             name: started.name,
             pid: started.pid,
             running: true
@@ -269,11 +259,11 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
         void refreshSystem()
       }
     },
-    [refreshSystem]
+    [copy.commandCenter.actionStartedWaiting, refreshSystem]
   )
 
   return (
-    <OverlayView closeLabel="Close command center" onClose={onClose}>
+    <OverlayView closeLabel={copy.commandCenter.close} onClose={onClose}>
       <OverlaySplitLayout>
         <OverlaySidebar>
           {SECTIONS.map(value => (
@@ -281,7 +271,13 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
               active={section === value}
               icon={SECTION_ICONS[value]}
               key={value}
-              label={SECTION_LABELS[value]}
+              label={
+                value === 'sessions'
+                  ? copy.common.sessions
+                  : value === 'system'
+                    ? copy.common.system
+                    : copy.common.usage
+              }
               onClick={() => setSection(value)}
             />
           ))}
@@ -291,10 +287,14 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           <header className="mb-4 flex items-center justify-between gap-3">
             <div className="min-w-0">
               <h2 className="text-[length:var(--conversation-text-font-size)] font-semibold text-foreground">
-                {SECTION_LABELS[section]}
+                {section === 'sessions'
+                  ? copy.common.sessions
+                  : section === 'system'
+                    ? copy.common.system
+                    : copy.common.usage}
               </h2>
               <p className="mt-0.5 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                {SECTION_DESCRIPTIONS[section]}
+                {copy.commandCenter.sectionDescriptions[section]}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
@@ -302,7 +302,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                 <SearchField
                   containerClassName="max-w-[40vw]"
                   onChange={next => setQuery(next)}
-                  placeholder="Search sessions…"
+                  placeholder={copy.commandCenter.searchSessions}
                   value={query}
                 />
               )}
@@ -321,11 +321,9 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
               {!sessionListHasResults ? (
                 <EmptyPanel
                   description={
-                    debouncedQuery
-                      ? 'No sessions match your search.'
-                      : 'Sessions you start will show up here to search, pin, and export.'
+                    debouncedQuery ? copy.commandCenter.noSessionsMatch : copy.commandCenter.noSessionsYetDescription
                   }
-                  title={debouncedQuery ? 'No matches' : 'No sessions yet'}
+                  title={debouncedQuery ? copy.common.noMatches : copy.commandCenter.noSessionsYet}
                 />
               ) : (
                 <ul>
@@ -350,7 +348,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                         <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
                           <RowIconButton
                             onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
-                            title={pinned ? 'Unpin session' : 'Pin session'}
+                            title={pinned ? copy.commandCenter.unpinSession : copy.commandCenter.pinSession}
                           >
                             {pinned ? (
                               <IconBookmarkFilled className="size-3.5" />
@@ -360,14 +358,14 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                           </RowIconButton>
                           <RowIconButton
                             onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
-                            title="Export session"
+                            title={copy.commandCenter.exportSession}
                           >
                             <IconDownload className="size-3.5" />
                           </RowIconButton>
                           <RowIconButton
                             className="hover:text-destructive"
                             onClick={() => void onDeleteSession(session.id)}
-                            title="Delete session"
+                            title={copy.commandCenter.deleteSession}
                           >
                             <IconTrash className="size-3.5" />
                           </RowIconButton>
@@ -401,38 +399,44 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                             )}
                           />
                           <span className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-                            {status.gateway_running ? 'Messaging gateway running' : 'Messaging gateway stopped'}
+                            {status.gateway_running
+                              ? copy.commandCenter.messagingGatewayRunning
+                              : copy.commandCenter.messagingGatewayStopped}
                           </span>
                         </div>
                         <div className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                          Hermes {status.version} · Active sessions {status.active_sessions}
+                          Hermes {status.version} · {copy.commandCenter.activeSessions} {status.active_sessions}
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
                         <Button onClick={() => void runSystemAction('restart')} size="xs" variant="text">
-                          Restart messaging
+                          {copy.commandCenter.restartMessaging}
                         </Button>
                         <Button onClick={() => void runSystemAction('update')} size="xs" variant="textStrong">
-                          Update Hermes
+                          {copy.commandCenter.updateHermes}
                         </Button>
                       </div>
                     </div>
                     {systemAction && (
                       <div className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
                         {systemAction.name} ·{' '}
-                        {systemAction.running ? 'running' : systemAction.exit_code === 0 ? 'done' : 'failed'}
+                        {systemAction.running
+                          ? copy.commandCenter.running
+                          : systemAction.exit_code === 0
+                            ? copy.commandCenter.done
+                            : copy.commandCenter.failed}
                       </div>
                     )}
                   </div>
                 ) : (
-                  <PageLoader className="min-h-32" label="Loading status" />
+                  <PageLoader className="min-h-32" label={copy.commandCenter.loadingStatus} />
                 )}
               </div>
 
               <div className="flex min-h-0 flex-col">
                 <div className="mb-2 flex items-center justify-between">
                   <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
-                    Recent logs
+                    {copy.commandCenter.recentLogs}
                   </span>
                   {systemError && (
                     <span className="inline-flex items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-destructive">
@@ -442,7 +446,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                   )}
                 </div>
                 <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.65rem] leading-relaxed text-(--ui-text-tertiary)">
-                  {logs.length ? logs.join('\n') : 'No logs loaded yet.'}
+                  {logs.length ? logs.join('\n') : copy.commandCenter.noLogsLoaded}
                 </pre>
               </div>
             </div>
@@ -494,6 +498,7 @@ interface UsagePanelProps {
 }
 
 function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProps) {
+  const copy = useAppCopy()
   const daily = useMemo(() => usage?.daily ?? [], [usage])
   const totals = usage?.totals
   const byModel = usage?.by_model ?? []
@@ -511,16 +516,16 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
     return (
       <div className="min-h-0 flex-1">
         {loading ? (
-          <PageLoader className="min-h-48" label="Loading usage" />
+          <PageLoader className="min-h-48" label={copy.commandCenter.loadingUsage} />
         ) : (
           <EmptyPanel
             action={
               <Button onClick={onRefresh} size="xs" variant="outline">
-                Retry
+                {copy.commandCenter.retry}
               </Button>
             }
-            description={`No token, cost, or skill activity recorded in the last ${period} days.`}
-            title="No usage yet"
+            description={copy.commandCenter.noUsageDescription(period)}
+            title={copy.commandCenter.noUsageYet}
           />
         )}
       </div>
@@ -537,15 +542,19 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
       )}
 
       <div className="grid grid-cols-2 gap-x-4 gap-y-4 border-b border-(--ui-stroke-tertiary) pb-5 sm:grid-cols-4">
-        <UsageStat label="Sessions" value={formatInteger(totals.total_sessions)} />
-        <UsageStat label="API calls" value={formatInteger(totals.total_api_calls)} />
+        <UsageStat label={copy.common.sessions} value={formatInteger(totals.total_sessions)} />
+        <UsageStat label={copy.commandCenter.apiCalls} value={formatInteger(totals.total_api_calls)} />
         <UsageStat
-          label="Tokens in/out"
+          label={copy.commandCenter.tokensInOut}
           value={`${formatTokens(totals.total_input)} / ${formatTokens(totals.total_output)}`}
         />
         <UsageStat
-          hint={totals.total_actual_cost > 0 ? `actual ${formatCost(totals.total_actual_cost)}` : undefined}
-          label="Est. cost"
+          hint={
+            totals.total_actual_cost > 0
+              ? `${copy.commandCenter.actualCost} ${formatCost(totals.total_actual_cost)}`
+              : undefined
+          }
+          label={copy.commandCenter.estimatedCost}
           value={formatCost(totals.total_estimated_cost)}
         />
       </div>
@@ -553,20 +562,20 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
       <section>
         <div className="mb-2 flex items-baseline justify-between">
           <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
-            Daily tokens
+            {copy.commandCenter.dailyTokens}
           </span>
           <span className="flex items-center gap-3 text-[0.65rem] text-(--ui-text-tertiary)">
             <span className="inline-flex items-center gap-1">
-              <span className="size-2 rounded-[1px] bg-[color:var(--dt-primary)]/60" /> input
+              <span className="size-2 rounded-[1px] bg-[color:var(--dt-primary)]/60" /> {copy.commandCenter.input}
             </span>
             <span className="inline-flex items-center gap-1">
-              <span className="size-2 rounded-[1px] bg-emerald-500/70" /> output
+              <span className="size-2 rounded-[1px] bg-emerald-500/70" /> {copy.commandCenter.output}
             </span>
           </span>
         </div>
         {daily.length === 0 ? (
           <div className="grid h-24 place-items-center text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-            No daily activity.
+            {copy.commandCenter.noDailyActivity}
           </div>
         ) : (
           <>
@@ -604,22 +613,22 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
 
       <div className="grid min-h-0 gap-x-8 gap-y-5 border-t border-(--ui-stroke-tertiary) pt-5 sm:grid-cols-2">
         <UsageList
-          emptyLabel="No model usage yet."
+          emptyLabel={copy.commandCenter.noModelUsage}
           rows={byModel.slice(0, 6).map(entry => ({
             key: entry.model,
             label: entry.model,
             value: `${formatTokens((entry.input_tokens || 0) + (entry.output_tokens || 0))} · ${formatCost(entry.estimated_cost)}`
           }))}
-          title="Top models"
+          title={copy.commandCenter.topModels}
         />
         <UsageList
-          emptyLabel="No skill activity yet."
+          emptyLabel={copy.commandCenter.noSkillActivity}
           rows={topSkills.slice(0, 6).map(entry => ({
             key: entry.skill,
             label: entry.skill,
-            value: `${entry.total_count.toLocaleString()} actions`
+            value: copy.commandCenter.usageActions(entry.total_count)
           }))}
-          title="Top skills"
+          title={copy.commandCenter.topSkills}
         />
       </div>
     </div>

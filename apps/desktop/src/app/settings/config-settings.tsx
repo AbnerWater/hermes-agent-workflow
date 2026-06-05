@@ -1,3 +1,4 @@
+import { useStore } from '@nanostores/react'
 import type { ChangeEvent, ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
@@ -13,11 +14,13 @@ import {
   getHermesConfigSchema,
   saveHermesConfig
 } from '@/hermes'
+import { useAppCopy } from '@/i18n'
 import { cn } from '@/lib/utils'
+import { $appLanguage } from '@/store/app-language'
 import { notify, notifyError } from '@/store/notifications'
 import type { ConfigFieldSchema, HermesConfigRecord } from '@/types/hermes'
 
-import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
+import { CONTROL_TEXT, EMPTY_SELECT_VALUE, fieldDescriptionsFor, fieldLabelsFor, SECTIONS } from './constants'
 import { enumOptionsFor, getNested, prettyName, setNested } from './helpers'
 import { ModelSettings } from './model-settings'
 import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
@@ -37,9 +40,13 @@ function ConfigField({
   optionLabels?: Record<string, string>
   onChange: (value: unknown) => void
 }) {
-  const label = FIELD_LABELS[schemaKey] ?? prettyName(schemaKey.split('.').pop() ?? schemaKey)
+  const copy = useAppCopy()
+  const language = useStore($appLanguage)
+  const fieldLabels = fieldLabelsFor(language)
+  const fieldDescriptions = fieldDescriptionsFor(language)
+  const label = fieldLabels[schemaKey] ?? prettyName(schemaKey.split('.').pop() ?? schemaKey)
   const normalize = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, '')
-  const rawDescription = (FIELD_DESCRIPTIONS[schemaKey] ?? schema.description ?? '').trim()
+  const rawDescription = (fieldDescriptions[schemaKey] ?? schema.description ?? '').trim()
   const normalizedDesc = normalize(rawDescription)
 
   const description =
@@ -76,8 +83,8 @@ function ConfigField({
               {option
                 ? (optionLabels?.[option] ?? prettyName(option))
                 : schemaKey === 'display.personality'
-                  ? 'None'
-                  : '(none)'}
+                  ? copy.settings.nonePlain
+                  : copy.settings.none}
             </SelectItem>
           ))}
         </SelectContent>
@@ -97,7 +104,7 @@ function ConfigField({
             onChange(n)
           }
         }}
-        placeholder="Not set"
+        placeholder={copy.settings.notSet}
         type="number"
         value={value === undefined || value === null ? '' : String(value)}
       />
@@ -116,7 +123,7 @@ function ConfigField({
               .filter(Boolean)
           )
         }
-        placeholder="comma-separated values"
+        placeholder={copy.settings.commaSeparatedValues}
         value={Array.isArray(value) ? value.join(', ') : String(value ?? '')}
       />
     )
@@ -133,7 +140,7 @@ function ConfigField({
             /* keep last valid */
           }
         }}
-        placeholder="Not set"
+        placeholder={copy.settings.notSet}
         spellCheck={false}
         value={JSON.stringify(value, null, 2)}
       />,
@@ -148,14 +155,14 @@ function ConfigField({
       <Textarea
         className={cn('min-h-24 resize-y bg-background', CONTROL_TEXT)}
         onChange={e => onChange(e.target.value)}
-        placeholder="Not set"
+        placeholder={copy.settings.notSet}
         value={String(value ?? '')}
       />
     ) : (
       <Input
         className={CONTROL_TEXT}
         onChange={e => onChange(e.target.value)}
-        placeholder="Not set"
+        placeholder={copy.settings.notSet}
         value={String(value ?? '')}
       />
     ),
@@ -174,6 +181,7 @@ export function ConfigSettings({
   onMainModelChanged?: (provider: string, model: string) => void
   importInputRef: React.RefObject<HTMLInputElement | null>
 }) {
+  const copy = useAppCopy()
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [_defaults, setDefaults] = useState<HermesConfigRecord | null>(null)
   const [schema, setSchema] = useState<Record<string, ConfigFieldSchema> | null>(null)
@@ -194,10 +202,10 @@ export function ConfigSettings({
         setDefaults(d)
         setSchema(s.fields)
       })
-      .catch(err => notifyError(err, 'Settings failed to load'))
+      .catch(err => notifyError(err, copy.settings.settingsFailedToLoad))
 
     return () => void (cancelled = true)
-  }, [])
+  }, [copy.settings.settingsFailedToLoad])
 
   useEffect(() => {
     let cancelled = false
@@ -238,14 +246,14 @@ export function ConfigSettings({
           }
         } catch (err) {
           if (saveVersionRef.current === v) {
-            notifyError(err, 'Autosave failed')
+            notifyError(err, copy.settings.autosaveFailed)
           }
         }
       })()
     }, 550)
 
     return () => window.clearTimeout(t)
-  }, [config, onConfigSaved, saveVersion])
+  }, [config, copy.settings.autosaveFailed, onConfigSaved, saveVersion])
 
   const updateConfig = (next: HermesConfigRecord) => {
     saveVersionRef.current += 1
@@ -311,9 +319,9 @@ export function ConfigSettings({
     reader.onload = () => {
       try {
         updateConfig(JSON.parse(String(reader.result)))
-        notify({ kind: 'success', title: 'Config imported', message: 'Saving…' })
+        notify({ kind: 'success', title: copy.settings.configImported, message: copy.settings.saving })
       } catch (err) {
-        notifyError(err, 'Invalid config JSON')
+        notifyError(err, copy.settings.invalidConfigJson)
       }
     }
 
@@ -322,7 +330,7 @@ export function ConfigSettings({
   }
 
   if (!config || !schema) {
-    return <LoadingState label="Loading Hermes configuration..." />
+    return <LoadingState label={copy.settings.loadingHermesConfiguration} />
   }
 
   return (
@@ -333,7 +341,10 @@ export function ConfigSettings({
         </div>
       )}
       {fields.length === 0 ? (
-        <EmptyState description="This section has no adjustable settings." title="Nothing to configure" />
+        <EmptyState
+          description={copy.settings.nothingToConfigureDescription}
+          title={copy.settings.nothingToConfigure}
+        />
       ) : (
         <div className="grid gap-1">
           {fields.map(([key, field]) => (

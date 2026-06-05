@@ -11,6 +11,7 @@ import {
   DropdownMenuSubContent
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
+import { useAppCopy } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 import {
   $activeSessionId,
@@ -97,6 +98,7 @@ export function ModelEditSubmenu({
   reasoning,
   requestGateway
 }: ModelEditSubmenuProps) {
+  const copy = useAppCopy().shell
   // Reactive session state comes straight from the stores rather than being
   // drilled through the panel, so editing it re-renders only this submenu.
   const activeSessionId = useStore($activeSessionId)
@@ -175,13 +177,13 @@ export function ModelEditSubmenu({
   return (
     <DropdownMenuSubContent className="w-52 p-0" sideOffset={4}>
       {!hasFast && !reasoning ? (
-        <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">No options for this model</div>
+        <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{copy.noModelOptions}</div>
       ) : (
         <>
-          <DropdownMenuLabel className={dropdownMenuSectionLabel}>Options</DropdownMenuLabel>
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.options}</DropdownMenuLabel>
           {reasoning ? (
             <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
-              Thinking
+              {copy.thinking}
               <Switch
                 checked={thinkingOn}
                 className="ml-auto"
@@ -194,14 +196,14 @@ export function ModelEditSubmenu({
           ) : null}
           {hasFast ? (
             <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
-              Fast
+              {copy.fast}
               <Switch checked={fastOn} className="ml-auto" onCheckedChange={toggleFast} size="xs" />
             </DropdownMenuItem>
           ) : null}
           {reasoning ? (
             <>
               <DropdownMenuSeparator className="mx-0" />
-              <DropdownMenuLabel className={dropdownMenuSectionLabel}>Effort</DropdownMenuLabel>
+              <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
               <DropdownMenuRadioGroup
                 onValueChange={value => void patchReasoning(value, currentReasoningEffort)}
                 value={effort}
@@ -213,7 +215,7 @@ export function ModelEditSubmenu({
                     onSelect={event => event.preventDefault()}
                     value={option.value}
                   >
-                    {option.label}
+                    {copy.effortLabels[option.value]}
                   </DropdownMenuRadioItem>
                 ))}
               </DropdownMenuRadioGroup>

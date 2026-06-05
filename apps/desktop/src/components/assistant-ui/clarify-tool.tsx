@@ -7,6 +7,7 @@ import { type FormEvent, type KeyboardEvent, useCallback, useMemo, useRef, useSt
 import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
+import { useAppCopy } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, HelpCircle, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -63,6 +64,7 @@ export const ClarifyTool = (props: ToolCallMessagePartProps) => {
 }
 
 function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
+  const copy = useAppCopy().assistant
   const request = useStore($clarifyRequest)
   const gateway = useStore($gateway)
   const fromArgs = useMemo(() => readClarifyArgs(args), [args])
@@ -102,13 +104,13 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const respond = useCallback(
     async (answer: string) => {
       if (!ready || !matchingRequest) {
-        notifyError(new Error('Clarify request is not ready yet'), 'Could not send clarify response')
+        notifyError(new Error(copy.clarifyNotReady), copy.couldNotSendClarifyResponse)
 
         return
       }
 
       if (!gateway) {
-        notifyError(new Error('Hermes gateway is not connected'), 'Could not send clarify response')
+        notifyError(new Error(copy.clarifyGatewayDisconnected), copy.couldNotSendClarifyResponse)
 
         return
       }
@@ -125,11 +127,11 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         // The matching tool.complete will land shortly after, swapping this
         // panel for the ToolFallback view above.
       } catch (error) {
-        notifyError(error, 'Could not send clarify response')
+        notifyError(error, copy.couldNotSendClarifyResponse)
         setSubmitting(false)
       }
     },
-    [gateway, matchingRequest, ready]
+    [copy, gateway, matchingRequest, ready]
   )
 
   const handleTextareaKey = useCallback(
@@ -172,7 +174,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
           <HelpCircle className="size-3.5" />
         </span>
         <span className="flex-1 whitespace-pre-wrap font-medium leading-snug text-foreground">
-          {question || <em className="font-normal text-muted-foreground/70">Loading question…</em>}
+          {question || <em className="font-normal text-muted-foreground/70">{copy.loadingQuestion}</em>}
         </span>
       </div>
 
@@ -209,7 +211,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
             type="button"
           >
             <RadioDot selected={false} />
-            <span className="flex-1">Other (type your answer)</span>
+            <span className="flex-1">{copy.otherTypeYourAnswer}</span>
           </button>
         </div>
       )}
@@ -221,12 +223,12 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
             disabled={submitting}
             onChange={event => setDraft(event.target.value)}
             onKeyDown={handleTextareaKey}
-            placeholder="Type your answer…"
+            placeholder={copy.typeYourAnswer}
             ref={textareaRef}
             value={draft}
           />
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[0.6875rem] text-muted-foreground/85">⌘/Ctrl + Enter to send</span>
+            <span className="text-[0.6875rem] text-muted-foreground/85">{copy.sendShortcut}</span>
             <div className="flex items-center gap-1.5">
               {hasChoices && (
                 <Button
@@ -239,7 +241,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
                   type="button"
                   variant="ghost"
                 >
-                  Back
+                  {copy.back}
                 </Button>
               )}
               <Button
@@ -249,10 +251,10 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
                 type="button"
                 variant="ghost"
               >
-                Skip
+                {copy.skip}
               </Button>
               <Button disabled={!ready || submitting || !draft.trim()} size="sm" type="submit">
-                {submitting ? <Loader2 className="size-3.5 animate-spin" /> : 'Send'}
+                {submitting ? <Loader2 className="size-3.5 animate-spin" /> : copy.send}
               </Button>
             </div>
           </div>
@@ -267,7 +269,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
             onClick={() => void respond('')}
             type="button"
           >
-            Skip
+            {copy.skip}
           </button>
         </div>
       )}

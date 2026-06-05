@@ -1,6 +1,7 @@
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
+import { useAppCopy } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AudioLines, Layers3, Loader2, Square } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -55,6 +56,8 @@ export function ComposerControls({
   voiceStatus: VoiceStatus
   onDictate: () => void
 }) {
+  const copy = useAppCopy()
+
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
   }
@@ -65,9 +68,9 @@ export function ComposerControls({
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
       <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
       {showVoicePrimary ? (
-        <Tip label="Start voice conversation">
+        <Tip label={copy.chat.startVoiceConversation}>
           <Button
-            aria-label="Start voice conversation"
+            aria-label={copy.chat.startVoiceConversation}
             className={PRIMARY_ICON_BTN}
             disabled={disabled}
             onClick={() => {
@@ -81,9 +84,9 @@ export function ComposerControls({
           </Button>
         </Tip>
       ) : (
-        <Tip label={busy ? (busyAction === 'queue' ? 'Queue message' : 'Stop') : 'Send'}>
+        <Tip label={busy ? (busyAction === 'queue' ? copy.chat.queueMessage : copy.chat.stop) : copy.chat.send}>
           <Button
-            aria-label={busy ? (busyAction === 'queue' ? 'Queue message' : 'Stop') : 'Send'}
+            aria-label={busy ? (busyAction === 'queue' ? copy.chat.queueMessage : copy.chat.stop) : copy.chat.send}
             className={PRIMARY_ICON_BTN}
             disabled={disabled || !canSubmit}
             type="submit"
@@ -113,25 +116,26 @@ function ConversationPill({
   onToggleMute,
   status
 }: ConversationProps & { disabled: boolean }) {
+  const copy = useAppCopy()
   const speaking = status === 'speaking'
   const listening = status === 'listening' && !muted
 
   const label =
     status === 'speaking'
-      ? 'Speaking'
+      ? copy.chat.speaking
       : status === 'transcribing'
-        ? 'Transcribing'
+        ? copy.chat.transcribing
         : status === 'thinking'
-          ? 'Thinking'
+          ? copy.chat.thinking
           : muted
-            ? 'Muted'
-            : 'Listening'
+            ? copy.chat.muted
+            : copy.chat.listening
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
-      <Tip label={muted ? 'Unmute microphone' : 'Mute microphone'}>
+      <Tip label={muted ? copy.chat.unmuteMicrophone : copy.chat.muteMicrophone}>
         <Button
-          aria-label={muted ? 'Unmute microphone' : 'Mute microphone'}
+          aria-label={muted ? copy.chat.unmuteMicrophone : copy.chat.muteMicrophone}
           aria-pressed={muted}
           className={cn(GHOST_ICON_BTN, 'p-0', muted && 'bg-muted text-muted-foreground')}
           disabled={disabled}
@@ -148,7 +152,7 @@ function ConversationPill({
       </Tip>
       {listening && (
         <Button
-          aria-label="Stop listening and send"
+          aria-label={copy.chat.stopListeningAndSend}
           className="h-(--composer-control-size) shrink-0 gap-1.5 rounded-full px-2.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
           disabled={disabled}
           onClick={() => {
@@ -159,11 +163,11 @@ function ConversationPill({
           variant="ghost"
         >
           <Square className="fill-current" size={11} />
-          <span>Stop</span>
+          <span>{copy.chat.stop}</span>
         </Button>
       )}
       <Button
-        aria-label="End voice conversation"
+        aria-label={copy.chat.endVoiceConversation}
         className="h-(--composer-control-size) gap-1.5 rounded-full bg-primary px-3 text-xs font-medium text-primary-foreground hover:bg-primary/90"
         disabled={disabled}
         onClick={() => {
@@ -173,7 +177,7 @@ function ConversationPill({
         type="button"
       >
         <ConversationIndicator level={level} listening={listening} speaking={speaking} />
-        <span>End</span>
+        <span>{copy.chat.end}</span>
       </Button>
       <span className="sr-only" role="status">
         {label}
@@ -220,10 +224,15 @@ function DictationButton({
   status: VoiceStatus
   onToggle: () => void
 }) {
+  const copy = useAppCopy()
   const active = state.active || status !== 'idle'
 
   const aria =
-    status === 'recording' ? 'Stop dictation' : status === 'transcribing' ? 'Transcribing dictation' : 'Voice dictation'
+    status === 'recording'
+      ? copy.chat.stopDictation
+      : status === 'transcribing'
+        ? copy.chat.transcribingDictation
+        : copy.chat.voiceDictation
 
   return (
     <Tip label={aria}>

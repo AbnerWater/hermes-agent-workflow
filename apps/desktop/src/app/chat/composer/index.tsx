@@ -17,6 +17,7 @@ import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-te
 import { Button } from '@/components/ui/button'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { useAppCopy } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
@@ -84,29 +85,6 @@ const COMPOSER_SINGLE_LINE_MAX_PX = 36
 const COMPOSER_FADE_BACKGROUND =
   'linear-gradient(to bottom, transparent, color-mix(in srgb, var(--dt-background) 10%, transparent))'
 
-// Resting composer placeholders. New sessions get open-ended starters; an
-// existing chat gets phrasings that read as a continuation of the thread.
-// One is picked at random per session (stable until the session changes).
-const NEW_SESSION_PLACEHOLDERS = [
-  'What are we building?',
-  'Give Hermes a task',
-  "What's on your mind?",
-  'Describe what you need',
-  'What should we tackle?',
-  'Ask anything',
-  'Start with a goal'
-]
-
-const FOLLOW_UP_PLACEHOLDERS = [
-  'Send a follow-up',
-  'Add more context',
-  'Refine the request',
-  "What's next?",
-  'Keep it going',
-  'Push it further',
-  'Adjust or continue'
-]
-
 const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
 
 interface QueueEditState {
@@ -141,6 +119,8 @@ export function ChatBar({
   onTranscribeAudio
 }: ChatBarProps) {
   const aui = useAui()
+  const appCopy = useAppCopy()
+  const chatCopy = appCopy.chat
   const draft = useAuiState(s => s.composer.text)
   const attachments = useStore($composerAttachments)
   const queuedPromptsBySession = useStore($queuedPromptsBySession)
@@ -198,9 +178,10 @@ export function ChatBar({
   // started session (null → id, on the first send) is treated as the same
   // conversation so the placeholder doesn't visibly flip mid-stream.
   const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
-    pickPlaceholder(sessionId ? FOLLOW_UP_PLACEHOLDERS : NEW_SESSION_PLACEHOLDERS)
+    pickPlaceholder(sessionId ? chatCopy.composerFollowUpPlaceholders : chatCopy.composerNewSessionPlaceholders)
   )
 
+  const copyRef = useRef(chatCopy)
   const prevSessionIdRef = useRef(sessionId)
 
   useEffect(() => {
@@ -217,16 +198,29 @@ export function ChatBar({
       return
     }
 
-    setRestingPlaceholder(pickPlaceholder(sessionId ? FOLLOW_UP_PLACEHOLDERS : NEW_SESSION_PLACEHOLDERS))
-  }, [sessionId])
+    setRestingPlaceholder(
+      pickPlaceholder(sessionId ? chatCopy.composerFollowUpPlaceholders : chatCopy.composerNewSessionPlaceholders)
+    )
+  }, [chatCopy, sessionId])
+
+  useEffect(() => {
+    if (copyRef.current === chatCopy) {
+      return
+    }
+
+    copyRef.current = chatCopy
+    setRestingPlaceholder(
+      pickPlaceholder(sessionId ? chatCopy.composerFollowUpPlaceholders : chatCopy.composerNewSessionPlaceholders)
+    )
+  }, [chatCopy, sessionId])
 
   // When the bar is disabled it's because the gateway isn't open. Distinguish a
   // cold start ("Starting Hermes...") from a dropped connection we're trying to
   // restore (e.g. after the Mac slept) so the stuck state reads as recoverable.
   const placeholder = disabled
     ? gatewayState === 'closed' || gatewayState === 'error'
-      ? 'Reconnecting to Hermes…'
-      : 'Starting Hermes...'
+      ? chatCopy.reconnectingHermes
+      : chatCopy.startingHermes
     : restingPlaceholder
 
   const focusInput = useCallback(() => {
@@ -1213,7 +1207,7 @@ export function ChatBar({
   const input = (
     <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
-        aria-label="Message"
+        aria-label={chatCopy.messageInput}
         autoCapitalize="off"
         autoCorrect="off"
         className={cn(
@@ -1360,9 +1354,7 @@ export function ChatBar({
                 <VoicePlaybackActivity />
                 {queueEdit && editingQueuedPrompt && (
                   <div className="flex items-center justify-between gap-2 rounded-lg border border-[color-mix(in_srgb,var(--dt-composer-ring)_32%,transparent)] bg-accent/18 px-2 py-1">
-                    <div className="min-w-0 text-[0.7rem] text-muted-foreground/88">
-                      Editing queued turn in composer
-                    </div>
+                    <div className="min-w-0 text-[0.7rem] text-muted-foreground/88">{chatCopy.editingQueuedTurn}</div>
                     <div className="flex shrink-0 items-center gap-1">
                       <Button
                         className="h-6 rounded-md px-2 text-[0.68rem]"
@@ -1370,14 +1362,14 @@ export function ChatBar({
                         type="button"
                         variant="ghost"
                       >
-                        Cancel
+                        {appCopy.common.cancel}
                       </Button>
                       <Button
                         className="h-6 rounded-md px-2 text-[0.68rem]"
                         onClick={() => exitQueuedEdit('save')}
                         type="button"
                       >
-                        Save
+                        {appCopy.common.save}
                       </Button>
                     </div>
                   </div>

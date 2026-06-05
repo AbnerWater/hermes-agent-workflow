@@ -25,8 +25,8 @@ import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
-import { Button } from '@/components/ui/button'
 import { CompactMarkdown } from '@/components/chat/compact-markdown'
+import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -46,8 +46,8 @@ import {
   getWorkflowProject,
   listWorkflowEvents,
   listWorkflowProjects,
-  pauseWorkflowRun,
   passWorkflowNode,
+  pauseWorkflowRun,
   retryWorkflowNode,
   saveWorkflow,
   sendWorkflowChat,
@@ -55,8 +55,8 @@ import {
   skipWorkflowNode,
   startWorkflowIntake,
   startWorkflowRun,
-  submitWorkflowIntakeAnswers,
   stopWorkflowRun,
+  submitWorkflowIntakeAnswers,
   updateWorkflowReferences,
   updateWorkflowSkills
 } from '@/hermes'
@@ -87,11 +87,9 @@ import type {
 } from '@/types/workflow'
 
 import { titlebarHeaderBaseClass } from '../shell/titlebar'
+
 import { type WorkflowCopy, workflowCopyFor } from './i18n'
-import {
-  applyWorkflowProjectChange,
-  dispatchWorkflowProjectsChanged
-} from './project-events'
+import { applyWorkflowProjectChange, dispatchWorkflowProjectsChanged } from './project-events'
 
 type DrawerMode = 'files' | 'references' | 'skills' | 'snapshots' | 'task'
 
@@ -138,7 +136,10 @@ function edgeSourceHandle(edge: WorkflowEdge): 'failure' | 'success' {
 }
 
 function workflowNodeIsDecisionNode(workflow: Workflow | null, node: WorkflowNode): boolean {
-  const nodeType = String(node.type || '').trim().toLowerCase()
+  const nodeType = String(node.type || '')
+    .trim()
+    .toLowerCase()
+
   return (
     nodeType === 'review' ||
     nodeType === 'test' ||
@@ -168,6 +169,7 @@ const DEFAULT_SKILLS: SkillBinding[] = [
   { id: 'reviewer', name: 'reviewer', enabled: true, source: 'hermes' },
   { id: 'writer', name: 'writer', enabled: true, source: 'hermes' }
 ]
+
 const DEFAULT_MAX_CONCURRENCY = 2
 const RIGHT_DRAWER_WIDTH_KEY = 'hermes.workflow.rightDrawerWidth'
 const RIGHT_DRAWER_MIN_WIDTH = 280
@@ -182,7 +184,13 @@ function WorkflowNodeCard({ data, selected }: NodeProps<FlowNode>) {
 
   return (
     <div className={cn('workflow-node-card', selected && 'is-selected', `tone-${status.tone}`)}>
-      <Handle className="workflow-handle workflow-handle--input" id="input" position={Position.Left} title="Input" type="target" />
+      <Handle
+        className="workflow-handle workflow-handle--input"
+        id="input"
+        position={Position.Left}
+        title={copy.input}
+        type="target"
+      />
       <div className="workflow-node-card__top">
         <span className="workflow-node-card__type">{nodeType}</span>
         <span className={cn('workflow-status-pill', `tone-${status.tone}`)}>{status.label}</span>
@@ -190,18 +198,27 @@ function WorkflowNodeCard({ data, selected }: NodeProps<FlowNode>) {
       <div className="workflow-node-card__title">{data.node.title}</div>
       <div className="workflow-node-card__description">{data.node.description}</div>
       <div className="workflow-node-card__meta">
-        <span>{data.node.skills.length ? data.node.skills.join(' / ') : 'no skill'}</span>
-        {hasReview && <span>review gate</span>}
+        <span>{data.node.skills.length ? data.node.skills.join(' / ') : copy.noSkill}</span>
+        {hasReview && <span>{copy.reviewGate}</span>}
       </div>
       <Handle
-        className={cn('workflow-handle workflow-handle--success', !data.decisionNode && 'workflow-handle--single-output')}
+        className={cn(
+          'workflow-handle workflow-handle--success',
+          !data.decisionNode && 'workflow-handle--single-output'
+        )}
         id="success"
         position={Position.Right}
         title={copy.successOutput}
         type="source"
       />
       {data.decisionNode && (
-        <Handle className="workflow-handle workflow-handle--failure" id="failure" position={Position.Right} title={copy.failureOutput} type="source" />
+        <Handle
+          className="workflow-handle workflow-handle--failure"
+          id="failure"
+          position={Position.Right}
+          title={copy.failureOutput}
+          type="source"
+        />
       )}
     </div>
   )
@@ -332,7 +349,9 @@ function WorkflowWorkbench() {
           ...(typeof since === 'number' ? { since: String(since) } : {})
         })
 
-        socket = new WebSocket(`${wsBase}/api/workflows/projects/${encodeURIComponent(activeProjectId)}/events?${suffix}`)
+        socket = new WebSocket(
+          `${wsBase}/api/workflows/projects/${encodeURIComponent(activeProjectId)}/events?${suffix}`
+        )
         socket.onopen = () => setWsHealthy(true)
         socket.onclose = () => setWsHealthy(false)
         socket.onerror = () => setWsHealthy(false)
@@ -365,6 +384,7 @@ function WorkflowWorkbench() {
 
   const activeRun = bundle?.latestRun ?? null
   const runtimeNodeId = useMemo(() => latestWorkflowRuntimeNodeId(activeRun, streamEvents), [activeRun, streamEvents])
+
   const runtimeNode = useMemo(
     () => workflow?.nodes.find(node => node.id === runtimeNodeId) ?? null,
     [runtimeNodeId, workflow]
@@ -410,8 +430,8 @@ function WorkflowWorkbench() {
     }
 
     setFlowNodes(toFlowNodes(workflow))
-    setFlowEdges(toFlowEdges(workflow))
-  }, [setFlowEdges, setFlowNodes, workflow])
+    setFlowEdges(toFlowEdges(workflow, copy))
+  }, [copy, setFlowEdges, setFlowNodes, workflow])
 
   const invalidateProject = useCallback(
     async (projectId = activeProjectId) => {
@@ -463,7 +483,8 @@ function WorkflowWorkbench() {
   })
 
   const runMutation = useMutation({
-    mutationFn: () => startWorkflowRun(activeProjectId!, { maxConcurrency: DEFAULT_MAX_CONCURRENCY, mode: executionMode }),
+    mutationFn: () =>
+      startWorkflowRun(activeProjectId!, { maxConcurrency: DEFAULT_MAX_CONCURRENCY, mode: executionMode }),
     onSuccess: data => invalidateProject(data.project?.id)
   })
 
@@ -524,7 +545,8 @@ function WorkflowWorkbench() {
   })
 
   const slashMutation = useMutation({
-    mutationFn: (command: string) => executeWorkflowSlashCommand(activeProjectId!, { command, nodeId: selectedNode?.id ?? null }),
+    mutationFn: (command: string) =>
+      executeWorkflowSlashCommand(activeProjectId!, { command, nodeId: selectedNode?.id ?? null }),
     onSuccess: () => invalidateProject()
   })
 
@@ -584,6 +606,7 @@ function WorkflowWorkbench() {
 
       const sourceHandle = connection.sourceHandle === 'failure' ? 'failure' : 'success'
       const sourceNode = workflow.nodes.find(node => node.id === connection.source)
+
       if (!sourceNode) {
         return
       }
@@ -685,10 +708,7 @@ function WorkflowWorkbench() {
 
           <div className="workflow-main">
             <section aria-label="Workflow canvas workbench" className="workflow-center">
-              <WorkflowFloatingToolbar
-                active={drawerMode}
-                onToggle={setDrawerMode}
-              />
+              <WorkflowFloatingToolbar active={drawerMode} onToggle={setDrawerMode} />
               <WorkflowStatusOverlay
                 activeRun={activeRun}
                 executionMode={executionMode}
@@ -697,123 +717,129 @@ function WorkflowWorkbench() {
                 selectedNode={selectedNode}
                 workflow={workflow}
               />
-          {bundleQuery.isLoading || projectsQuery.isLoading ? (
-            <WorkbenchLoading />
-          ) : workflow && workflow.nodes.length > 0 ? (
-            <ReactFlow
-              className="workflow-flow"
-              colorMode={resolvedMode}
-              connectOnClick={false}
-              edges={flowEdges}
-              elementsSelectable
-              fitView
-              maxZoom={1.4}
-              minZoom={0.35}
-              nodes={flowNodes}
-              nodesConnectable
-              nodesDraggable
-              nodeTypes={nodeTypes}
-              onConnect={onConnect}
-              onEdgesChange={onEdgesChange}
-              onNodeClick={(_event, node) => {
-                setAutoFollowRunNode(false)
-                setSelectedNodeId(node.id)
-                setDrawerMode('task')
-              }}
-              onNodeDragStop={persistNodePosition}
-              onNodesChange={onNodesChange}
-              proOptions={{ hideAttribution: true }}
-            >
-              <Background color="var(--workflow-canvas-dot)" gap={24} size={1} />
-              <MiniMap
-                className="workflow-minimap"
-                maskColor="var(--workflow-minimap-mask)"
-                nodeColor={node => statusColor((node.data as WorkflowNodeData).node.status)}
-                pannable
-                zoomable
-              />
-              <Controls className="workflow-controls" showInteractive={false} />
-            </ReactFlow>
-          ) : (
-            <EmptyWorkbench
-              busy={generateMutation.isPending}
-              hasProject={Boolean(activeProjectId)}
-              onAddReference={() => setDrawerMode('references')}
-              onCreate={() => setSearchParams({ new: '1' })}
-              onGenerate={() => activeProjectId && generateMutation.mutate()}
-            />
-          )}
+              {bundleQuery.isLoading || projectsQuery.isLoading ? (
+                <WorkbenchLoading />
+              ) : workflow && workflow.nodes.length > 0 ? (
+                <ReactFlow
+                  className="workflow-flow"
+                  colorMode={resolvedMode}
+                  connectOnClick={false}
+                  edges={flowEdges}
+                  elementsSelectable
+                  fitView
+                  maxZoom={1.4}
+                  minZoom={0.35}
+                  nodes={flowNodes}
+                  nodesConnectable
+                  nodesDraggable
+                  nodeTypes={nodeTypes}
+                  onConnect={onConnect}
+                  onEdgesChange={onEdgesChange}
+                  onNodeClick={(_event, node) => {
+                    setAutoFollowRunNode(false)
+                    setSelectedNodeId(node.id)
+                    setDrawerMode('task')
+                  }}
+                  onNodeDragStop={persistNodePosition}
+                  onNodesChange={onNodesChange}
+                  proOptions={{ hideAttribution: true }}
+                >
+                  <Background color="var(--workflow-canvas-dot)" gap={24} size={1} />
+                  <MiniMap
+                    className="workflow-minimap"
+                    maskColor="var(--workflow-minimap-mask)"
+                    nodeColor={node => statusColor((node.data as WorkflowNodeData).node.status)}
+                    pannable
+                    zoomable
+                  />
+                  <Controls className="workflow-controls" showInteractive={false} />
+                </ReactFlow>
+              ) : (
+                <EmptyWorkbench
+                  busy={generateMutation.isPending}
+                  hasProject={Boolean(activeProjectId)}
+                  onAddReference={() => setDrawerMode('references')}
+                  onCreate={() => setSearchParams({ new: '1' })}
+                  onGenerate={() => activeProjectId && generateMutation.mutate()}
+                />
+              )}
 
-          <StreamOutputPanel
-            events={visibleEvents}
-            expanded={streamExpanded}
-            filterSelectedNode={filterSelectedNode}
-            onFilterSelectedNode={setFilterSelectedNode}
-            onToggleExpanded={() => setStreamExpanded(value => !value)}
-            selectedNode={selectedNode}
-            wsHealthy={wsHealthy}
-          />
-          <WorkflowChatBox
-            disabled={!activeProjectId || chatMutation.isPending || slashMutation.isPending}
-            onAttach={paths => composerAttachmentMutation.mutateAsync(paths).then(() => undefined)}
-            onSlash={command => slashMutation.mutate(command)}
-            onSubmit={(text, attachments) => chatMutation.mutate({ attachments, text })}
-            projectId={activeProjectId}
-            projectRoot={bundle?.project.root}
-            selectedNode={selectedNode}
-          />
+              <StreamOutputPanel
+                events={visibleEvents}
+                expanded={streamExpanded}
+                filterSelectedNode={filterSelectedNode}
+                onFilterSelectedNode={setFilterSelectedNode}
+                onToggleExpanded={() => setStreamExpanded(value => !value)}
+                selectedNode={selectedNode}
+                wsHealthy={wsHealthy}
+              />
+              <WorkflowChatBox
+                disabled={!activeProjectId || chatMutation.isPending || slashMutation.isPending}
+                onAttach={paths => composerAttachmentMutation.mutateAsync(paths).then(() => undefined)}
+                onSlash={command => slashMutation.mutate(command)}
+                onSubmit={(text, attachments) => chatMutation.mutate({ attachments, text })}
+                projectId={activeProjectId}
+                projectRoot={bundle?.project.root}
+                selectedNode={selectedNode}
+              />
             </section>
 
-        {(drawerMode === 'task' || drawerMode === 'files' || drawerMode === 'references' || drawerMode === 'skills' || drawerMode === 'snapshots') && (
-          <RightDrawer
-            activeRun={activeRun}
-            artifacts={bundle?.artifacts ?? []}
-            availableSkills={availableSkillsQuery.data ?? []}
-            files={filesQuery.data?.tree ?? []}
-            filesLoading={filesQuery.isLoading}
-            mode={drawerMode}
-            modelOptions={modelOptionsQuery.data ?? null}
-            node={selectedNode}
-            onAddReferences={paths => {
-              const current = bundle?.references ?? []
+            {(drawerMode === 'task' ||
+              drawerMode === 'files' ||
+              drawerMode === 'references' ||
+              drawerMode === 'skills' ||
+              drawerMode === 'snapshots') && (
+              <RightDrawer
+                activeRun={activeRun}
+                artifacts={bundle?.artifacts ?? []}
+                availableSkills={availableSkillsQuery.data ?? []}
+                files={filesQuery.data?.tree ?? []}
+                filesLoading={filesQuery.isLoading}
+                mode={drawerMode}
+                modelOptions={modelOptionsQuery.data ?? null}
+                node={selectedNode}
+                onAddReferences={paths => {
+                  const current = bundle?.references ?? []
 
-              const next = [
-                ...current,
-                ...paths.map(path => referenceFromPath(path)).filter(ref => !current.some(item => item.path === ref.path))
-              ]
+                  const next = [
+                    ...current,
+                    ...paths
+                      .map(path => referenceFromPath(path))
+                      .filter(ref => !current.some(item => item.path === ref.path))
+                  ]
 
-              referencesMutation.mutate(next)
-            }}
-            onClose={() => setDrawerMode('task')}
-            onNodeAction={(action, nodeId, runId, payload) => {
-              setAutoFollowRunNode(true)
-              setSelectedNodeId(payload?.targetNodeId ?? nodeId)
-              nodeActionMutation.mutate({ action, nodeId, runId, ...payload })
-            }}
-            onOpenFile={openPath}
-            onSaveNode={saveNodeConfig}
-            onSelectFile={setSelectedFilePath}
-            onSnapshot={() => snapshotMutation.mutate()}
-            onToggleReference={(reference, enabled) => {
-              const references = (bundle?.references ?? []).map(item =>
-                item.id === reference.id ? { ...item, enabled } : item
-              )
+                  referencesMutation.mutate(next)
+                }}
+                onClose={() => setDrawerMode('task')}
+                onNodeAction={(action, nodeId, runId, payload) => {
+                  setAutoFollowRunNode(true)
+                  setSelectedNodeId(payload?.targetNodeId ?? nodeId)
+                  nodeActionMutation.mutate({ action, nodeId, runId, ...payload })
+                }}
+                onOpenFile={openPath}
+                onSaveNode={saveNodeConfig}
+                onSelectFile={setSelectedFilePath}
+                onSnapshot={() => snapshotMutation.mutate()}
+                onToggleReference={(reference, enabled) => {
+                  const references = (bundle?.references ?? []).map(item =>
+                    item.id === reference.id ? { ...item, enabled } : item
+                  )
 
-              referencesMutation.mutate(references)
-            }}
-            onToggleSkill={(skill, enabled) => {
-              const current = bundle?.skills.length ? bundle.skills : DEFAULT_SKILLS
-              const skills = current.map(item => (item.id === skill.id ? { ...item, enabled } : item))
-              skillsMutation.mutate(skills)
-            }}
-            references={bundle?.references ?? []}
-            root={bundle?.project.root}
-            selectedFilePath={selectedFilePath}
-            skills={bundle?.skills.length ? bundle.skills : DEFAULT_SKILLS}
-            snapshots={bundle?.snapshots ?? []}
-            workflow={workflow}
-          />
-        )}
+                  referencesMutation.mutate(references)
+                }}
+                onToggleSkill={(skill, enabled) => {
+                  const current = bundle?.skills.length ? bundle.skills : DEFAULT_SKILLS
+                  const skills = current.map(item => (item.id === skill.id ? { ...item, enabled } : item))
+                  skillsMutation.mutate(skills)
+                }}
+                references={bundle?.references ?? []}
+                root={bundle?.project.root}
+                selectedFilePath={selectedFilePath}
+                skills={bundle?.skills.length ? bundle.skills : DEFAULT_SKILLS}
+                snapshots={bundle?.snapshots ?? []}
+                workflow={workflow}
+              />
+            )}
           </div>
         </>
       )}
@@ -850,7 +876,7 @@ function ExecutionToolbar({
       <div className="workflow-execution-toolbar__identity">
         <div className="workflow-title">{project?.name ?? 'hermes-workflow'}</div>
         <div className="workflow-subtitle">
-          {selectedNode ? `${copy.currentNodePrefix}${selectedNode.title}` : project?.root ?? copy.workflowStartHint}
+          {selectedNode ? `${copy.currentNodePrefix}${selectedNode.title}` : (project?.root ?? copy.workflowStartHint)}
         </div>
       </div>
 
@@ -874,7 +900,13 @@ function ExecutionToolbar({
           <Codicon name="debug-pause" size="0.875rem" />
           {copy.pause}
         </Button>
-        <Button disabled={!activeRun || busy || activeRun.status === 'stopped'} onClick={onStop} size="sm" type="button" variant="outline">
+        <Button
+          disabled={!activeRun || busy || activeRun.status === 'stopped'}
+          onClick={onStop}
+          size="sm"
+          type="button"
+          variant="outline"
+        >
           <Codicon name="debug-stop" size="0.875rem" />
           {copy.stop}
         </Button>
@@ -883,15 +915,7 @@ function ExecutionToolbar({
   )
 }
 
-function WorkflowPageTitlebar({
-  icon,
-  subtitle,
-  title
-}: {
-  icon: string
-  subtitle: string
-  title: string
-}) {
+function WorkflowPageTitlebar({ icon, subtitle, title }: { icon: string; subtitle: string; title: string }) {
   return (
     <header className={cn(titlebarHeaderBaseClass, 'workflow-page-titlebar')}>
       <Codicon className="workflow-page-titlebar__icon" name={icon} size="0.9375rem" />
@@ -926,30 +950,32 @@ function WorkflowStatusOverlay({
   const displayedNode = runtimeNode ?? selectedNode
 
   return (
-    <div className="workflow-status-overlay" aria-label="Workflow execution status">
+    <div aria-label="Workflow execution status" className="workflow-status-overlay">
       <span className={cn('workflow-run-dot', running && 'is-running', waiting && 'is-waiting')} />
       <span>{activeRun ? runStatusLabel(copy, activeRun.status) : copy.notRun}</span>
       <span>{total ? `${completed}/${total}` : '0/0'}</span>
       <span>{activeRun ? copy.mode[activeRun.mode] : copy.mode[executionMode]}</span>
       {runtimeNode ? (
-        <button className="workflow-status-overlay__node" onClick={onFollowRuntimeNode} title={runtimeNode.title} type="button">
+        <button
+          className="workflow-status-overlay__node"
+          onClick={onFollowRuntimeNode}
+          title={runtimeNode.title}
+          type="button"
+        >
           <strong>{runtimeNode.title}</strong>
         </button>
       ) : (
-        <strong title={displayedNode?.title ?? undefined}>{displayedNode ? displayedNode.title : copy.noNodeSelected}</strong>
+        <strong title={displayedNode?.title ?? undefined}>
+          {displayedNode ? displayedNode.title : copy.noNodeSelected}
+        </strong>
       )}
     </div>
   )
 }
 
-function WorkflowFloatingToolbar({
-  active,
-  onToggle
-}: {
-  active: DrawerMode
-  onToggle: (mode: DrawerMode) => void
-}) {
+function WorkflowFloatingToolbar({ active, onToggle }: { active: DrawerMode; onToggle: (mode: DrawerMode) => void }) {
   const copy = useWorkflowCopy()
+
   const items: Array<{ icon: string; label: string; mode: DrawerMode }> = [
     { icon: 'graph', label: copy.nodeDetails, mode: 'task' },
     { icon: 'files', label: copy.fileTree, mode: 'files' },
@@ -1027,7 +1053,14 @@ function FileTreeDrawer({
           <h2>{copy.projectFiles}</h2>
           <p>{root ?? copy.noProjectSelected}</p>
         </div>
-        <Button disabled={!root} onClick={onOpenProjectRoot} size="icon-sm" title={copy.openProjectInExplorer} type="button" variant="ghost">
+        <Button
+          disabled={!root}
+          onClick={onOpenProjectRoot}
+          size="icon-sm"
+          title={copy.openProjectInExplorer}
+          type="button"
+          variant="ghost"
+        >
           <Codicon name="folder-opened" size="0.875rem" />
         </Button>
       </div>
@@ -1080,7 +1113,10 @@ function FileTreeItem({
 
   return (
     <div>
-      <div className={cn('workflow-file-row', selected && 'is-selected')} style={{ paddingLeft: `${level * 0.75 + 0.5}rem` }}>
+      <div
+        className={cn('workflow-file-row', selected && 'is-selected')}
+        style={{ paddingLeft: `${level * 0.75 + 0.5}rem` }}
+      >
         <button
           className="workflow-file-main"
           onClick={() => {
@@ -1239,7 +1275,11 @@ function RightDrawer({
         />
       )}
       {mode === 'references' && (
-        <ReferenceDrawer onAddReferences={onAddReferences} onToggleReference={onToggleReference} references={references} />
+        <ReferenceDrawer
+          onAddReferences={onAddReferences}
+          onToggleReference={onToggleReference}
+          references={references}
+        />
       )}
       {mode === 'skills' && <SkillDrawer onToggleSkill={onToggleSkill} skills={skills} />}
       {mode === 'snapshots' && <SnapshotDrawer onSnapshot={onSnapshot} snapshots={snapshots} />}
@@ -1286,6 +1326,7 @@ function TaskDetailDrawer({
   const [promptEditing, setPromptEditing] = useState(false)
   const [promptDraft, setPromptDraft] = useState('')
   const [returnTargetId, setReturnTargetId] = useState('')
+
   const failureTargets = useMemo(() => {
     if (!workflow || !node) {
       return []
@@ -1334,14 +1375,24 @@ function TaskDetailDrawer({
   const status = statusMeta(copy, node.status)
   const runId = activeRun?.id ?? null
   const waiting = Boolean(runId && node.status === 'waiting_user_confirm')
-  const nodeArtifacts = artifacts.filter(artifact => artifact.nodeId === node.id || node.artifacts.includes(artifact.path))
+
+  const nodeArtifacts = artifacts.filter(
+    artifact => artifact.nodeId === node.id || node.artifacts.includes(artifact.path)
+  )
+
   const modelChoices = flattenModelChoices(modelOptions)
   const references = editable.references ?? []
   const fileChanges = editable.fileChanges ?? []
-  const selectedFileForReference = selectedFilePath && root ? normalizeProjectReference(root, selectedFilePath) : selectedFilePath
+
+  const selectedFileForReference =
+    selectedFilePath && root ? normalizeProjectReference(root, selectedFilePath) : selectedFilePath
+
   const effectivePrompt = editable.promptOverride || node.description || copy.taskPlaceholder
   const decisionNode = workflowNodeIsDecisionNode(workflow, node)
-  const selectedFailureTarget = failureTargets.find(item => item.node.id === returnTargetId) ?? failureTargets[0] ?? null
+
+  const selectedFailureTarget =
+    failureTargets.find(item => item.node.id === returnTargetId) ?? failureTargets[0] ?? null
+
   const reviewDecision = parseReviewDecision(node.outputs?.reviewDecision)
 
   const updateDraft = (updates: Partial<WorkflowNode>) => {
@@ -1407,268 +1458,332 @@ function TaskDetailDrawer({
       </div>
 
       <div className="workflow-task-detail__body">
-      <section>
-        <div className="workflow-section-header">
-          <h3>{copy.editExecutionPrompt}</h3>
-        </div>
-        {promptEditing ? (
-          <div className="workflow-prompt-editor-panel">
-            <Textarea
-              className="workflow-prompt-editor"
-              onChange={event => setPromptDraft(event.target.value)}
-              placeholder={copy.taskPlaceholder}
-              value={promptDraft}
-            />
-            <div className="workflow-prompt-editor-actions">
-              <Button aria-label={copy.cancelPromptEditing} onClick={cancelPromptEditing} size="xs" type="button" variant="outline">
-                {copy.cancel}
-              </Button>
-              <Button aria-label={copy.confirmPromptChanges} onClick={confirmPromptEditing} size="xs" type="button">
-                <Codicon name="check" size="0.8125rem" />
-                {copy.confirm}
-              </Button>
+        <section>
+          <div className="workflow-section-header">
+            <h3>{copy.editExecutionPrompt}</h3>
+          </div>
+          {promptEditing ? (
+            <div className="workflow-prompt-editor-panel">
+              <Textarea
+                className="workflow-prompt-editor"
+                onChange={event => setPromptDraft(event.target.value)}
+                placeholder={copy.taskPlaceholder}
+                value={promptDraft}
+              />
+              <div className="workflow-prompt-editor-actions">
+                <Button
+                  aria-label={copy.cancelPromptEditing}
+                  onClick={cancelPromptEditing}
+                  size="xs"
+                  type="button"
+                  variant="outline"
+                >
+                  {copy.cancel}
+                </Button>
+                <Button aria-label={copy.confirmPromptChanges} onClick={confirmPromptEditing} size="xs" type="button">
+                  <Codicon name="check" size="0.8125rem" />
+                  {copy.confirm}
+                </Button>
+              </div>
             </div>
-          </div>
-        ) : (
-          <div className="workflow-prompt-display">
-            <div className="workflow-prompt-display__text">{effectivePrompt}</div>
-            <Button className="workflow-prompt-display__edit" onClick={beginPromptEditing} size="xs" type="button" variant="outline">
-              <Codicon name="edit" size="0.8125rem" />
-              {copy.edit}
-            </Button>
-          </div>
-        )}
-      </section>
-
-      <section>
-        <h3>{copy.context}</h3>
-        <div className="workflow-key-values">
-          <span>{copy.type}</span>
-          <strong>{copy.nodeType[node.type as keyof typeof copy.nodeType] ?? node.type}</strong>
-          <span>{copy.model}</span>
-          <strong>{editable.modelOverride ?? editable.model ?? copy.globalModel}</strong>
-          <span>{copy.skills}</span>
-          <strong>{editable.skillMode === 'manual' ? `${editable.skills.length} ${copy.manualSkillsSummary}` : 'auto'}</strong>
-          <span>{copy.retry}</span>
-          <strong>
-            {node.retryCount}/{node.maxRetries}
-          </strong>
-        </div>
-      </section>
-
-      {reviewDecision && (
-        <section className="workflow-review-decision">
-          <h3>{copy.reviewDecision}</h3>
-          <div className="workflow-key-values">
-            <span>{copy.reviewDecisionStatus}</span>
-            <strong>{reviewDecisionLabel(copy, reviewDecision.decision)}</strong>
-            {reviewDecision.targetNodeId ? (
-              <>
-                <span>{copy.failureTarget}</span>
-                <strong>{workflow?.nodes.find(candidate => candidate.id === reviewDecision.targetNodeId)?.title ?? reviewDecision.targetNodeId}</strong>
-              </>
-            ) : null}
-          </div>
-          {reviewDecision.reason ? <p>{reviewDecision.reason}</p> : null}
-        </section>
-      )}
-
-      <section>
-        <h3>{copy.executionModel}</h3>
-        <Select
-          onValueChange={value => updateDraft({ modelOverride: value === '__inherit' ? null : value })}
-          value={editable.modelOverride ?? '__inherit'}
-        >
-          <SelectTrigger className="h-8 text-xs">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="__inherit">{copy.globalModel}</SelectItem>
-            {modelChoices.map(choice => (
-              <SelectItem key={`${choice.provider}-${choice.model}`} value={choice.model}>
-                {choice.provider} / {choice.model}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </section>
-
-      <section>
-        <button className="workflow-collapsible-heading" onClick={() => setSkillsOpen(value => !value)} type="button">
-          <h3>Skills</h3>
-          <span>{editable.skillMode === 'manual' ? `${editable.skills.length} selected` : 'auto'}</span>
-          <Codicon name={skillsOpen ? 'chevron-down' : 'chevron-right'} size="0.8125rem" />
-        </button>
-        {skillsOpen && (
-          <div className="workflow-config-list">
-            <label className="workflow-toggle-row">
-              <span>
-                <strong>{copy.autoCallHermesSkills}</strong>
-                <small>{copy.autoSkillDescription}</small>
-              </span>
-              <Switch checked={editable.skillMode !== 'manual'} onCheckedChange={checked => updateDraft({ skillMode: checked ? 'auto' : 'manual' })} />
-            </label>
-            {editable.skillMode === 'manual' &&
-              availableSkills.map(skill => (
-                <label className="workflow-check-row" key={skill.name}>
-                  <input
-                    checked={(editable.skills ?? []).includes(skill.name)}
-                    onChange={event => toggleSkill(skill.name, event.target.checked)}
-                    type="checkbox"
-                  />
-                  <span>
-                    <strong>{skill.name}</strong>
-                    <small>{skill.category} · {skill.description}</small>
-                  </span>
-                </label>
-              ))}
-            {editable.skillMode === 'manual' && !availableSkills.length && <div className="workflow-muted">{copy.manualSkillsEmpty}</div>}
-          </div>
-        )}
-      </section>
-
-      <section>
-        <button className="workflow-collapsible-heading" onClick={() => setReferencesOpen(value => !value)} type="button">
-          <h3>{copy.nodeReferences}</h3>
-          <span>{references.length}</span>
-          <Codicon name={referencesOpen ? 'chevron-down' : 'chevron-right'} size="0.8125rem" />
-        </button>
-        {referencesOpen && (
-          <div className="workflow-config-list">
-            <div className="workflow-inline-actions">
+          ) : (
+            <div className="workflow-prompt-display">
+              <div className="workflow-prompt-display__text">{effectivePrompt}</div>
               <Button
-                onClick={() => {
-                  void window.hermesDesktop
-                    .selectPaths({ multiple: true, title: copy.chooseCurrentNodeReference })
-                    .then(paths => paths.forEach(addReference))
-                }}
+                className="workflow-prompt-display__edit"
+                onClick={beginPromptEditing}
                 size="xs"
                 type="button"
                 variant="outline"
               >
-                <Codicon name="add" size="0.8125rem" />
-                {copy.addFiles}
-              </Button>
-              <Button disabled={!selectedFileForReference} onClick={() => selectedFileForReference && addReference(selectedFileForReference)} size="xs" type="button" variant="outline">
-                <Codicon name="files" size="0.8125rem" />
-                {copy.addSelectedFile}
+                <Codicon name="edit" size="0.8125rem" />
+                {copy.edit}
               </Button>
             </div>
-            {references.length ? (
-              references.map(path => (
-                <div className="workflow-reference-row" key={path}>
-                  <span title={path}>{path}</span>
-                  <Button onClick={() => onOpenFile(resolveProjectPath(root, path))} size="icon-xs" type="button" variant="ghost">
-                    <Codicon name="go-to-file" size="0.75rem" />
-                  </Button>
-                  <Button onClick={() => updateDraft({ references: references.filter(item => item !== path) })} size="icon-xs" type="button" variant="ghost">
-                    <Codicon name="close" size="0.75rem" />
-                  </Button>
+          )}
+        </section>
+
+        <section>
+          <h3>{copy.context}</h3>
+          <div className="workflow-key-values">
+            <span>{copy.type}</span>
+            <strong>{copy.nodeType[node.type as keyof typeof copy.nodeType] ?? node.type}</strong>
+            <span>{copy.model}</span>
+            <strong>{editable.modelOverride ?? editable.model ?? copy.globalModel}</strong>
+            <span>{copy.skills}</span>
+            <strong>
+              {editable.skillMode === 'manual' ? `${editable.skills.length} ${copy.manualSkillsSummary}` : 'auto'}
+            </strong>
+            <span>{copy.retry}</span>
+            <strong>
+              {node.retryCount}/{node.maxRetries}
+            </strong>
+          </div>
+        </section>
+
+        {reviewDecision && (
+          <section className="workflow-review-decision">
+            <h3>{copy.reviewDecision}</h3>
+            <div className="workflow-key-values">
+              <span>{copy.reviewDecisionStatus}</span>
+              <strong>{reviewDecisionLabel(copy, reviewDecision.decision)}</strong>
+              {reviewDecision.targetNodeId ? (
+                <>
+                  <span>{copy.failureTarget}</span>
+                  <strong>
+                    {workflow?.nodes.find(candidate => candidate.id === reviewDecision.targetNodeId)?.title ??
+                      reviewDecision.targetNodeId}
+                  </strong>
+                </>
+              ) : null}
+            </div>
+            {reviewDecision.reason ? <p>{reviewDecision.reason}</p> : null}
+          </section>
+        )}
+
+        <section>
+          <h3>{copy.executionModel}</h3>
+          <Select
+            onValueChange={value => updateDraft({ modelOverride: value === '__inherit' ? null : value })}
+            value={editable.modelOverride ?? '__inherit'}
+          >
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="__inherit">{copy.globalModel}</SelectItem>
+              {modelChoices.map(choice => (
+                <SelectItem key={`${choice.provider}-${choice.model}`} value={choice.model}>
+                  {choice.provider} / {choice.model}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </section>
+
+        <section>
+          <button className="workflow-collapsible-heading" onClick={() => setSkillsOpen(value => !value)} type="button">
+            <h3>Skills</h3>
+            <span>{editable.skillMode === 'manual' ? `${editable.skills.length} selected` : 'auto'}</span>
+            <Codicon name={skillsOpen ? 'chevron-down' : 'chevron-right'} size="0.8125rem" />
+          </button>
+          {skillsOpen && (
+            <div className="workflow-config-list">
+              <label className="workflow-toggle-row">
+                <span>
+                  <strong>{copy.autoCallHermesSkills}</strong>
+                  <small>{copy.autoSkillDescription}</small>
+                </span>
+                <Switch
+                  checked={editable.skillMode !== 'manual'}
+                  onCheckedChange={checked => updateDraft({ skillMode: checked ? 'auto' : 'manual' })}
+                />
+              </label>
+              {editable.skillMode === 'manual' &&
+                availableSkills.map(skill => (
+                  <label className="workflow-check-row" key={skill.name}>
+                    <input
+                      checked={(editable.skills ?? []).includes(skill.name)}
+                      onChange={event => toggleSkill(skill.name, event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>
+                      <strong>{skill.name}</strong>
+                      <small>
+                        {skill.category} · {skill.description}
+                      </small>
+                    </span>
+                  </label>
+                ))}
+              {editable.skillMode === 'manual' && !availableSkills.length && (
+                <div className="workflow-muted">{copy.manualSkillsEmpty}</div>
+              )}
+            </div>
+          )}
+        </section>
+
+        <section>
+          <button
+            className="workflow-collapsible-heading"
+            onClick={() => setReferencesOpen(value => !value)}
+            type="button"
+          >
+            <h3>{copy.nodeReferences}</h3>
+            <span>{references.length}</span>
+            <Codicon name={referencesOpen ? 'chevron-down' : 'chevron-right'} size="0.8125rem" />
+          </button>
+          {referencesOpen && (
+            <div className="workflow-config-list">
+              <div className="workflow-inline-actions">
+                <Button
+                  onClick={() => {
+                    void window.hermesDesktop
+                      .selectPaths({ multiple: true, title: copy.chooseCurrentNodeReference })
+                      .then(paths => paths.forEach(addReference))
+                  }}
+                  size="xs"
+                  type="button"
+                  variant="outline"
+                >
+                  <Codicon name="add" size="0.8125rem" />
+                  {copy.addFiles}
+                </Button>
+                <Button
+                  disabled={!selectedFileForReference}
+                  onClick={() => selectedFileForReference && addReference(selectedFileForReference)}
+                  size="xs"
+                  type="button"
+                  variant="outline"
+                >
+                  <Codicon name="files" size="0.8125rem" />
+                  {copy.addSelectedFile}
+                </Button>
+              </div>
+              {references.length ? (
+                references.map(path => (
+                  <div className="workflow-reference-row" key={path}>
+                    <span title={path}>{path}</span>
+                    <Button
+                      onClick={() => onOpenFile(resolveProjectPath(root, path))}
+                      size="icon-xs"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <Codicon name="go-to-file" size="0.75rem" />
+                    </Button>
+                    <Button
+                      onClick={() => updateDraft({ references: references.filter(item => item !== path) })}
+                      size="icon-xs"
+                      type="button"
+                      variant="ghost"
+                    >
+                      <Codicon name="close" size="0.75rem" />
+                    </Button>
+                  </div>
+                ))
+              ) : (
+                <div className="workflow-muted">{copy.noNodeReferences}</div>
+              )}
+            </div>
+          )}
+        </section>
+
+        <section>
+          <h3>Review Rules</h3>
+          <ul className="workflow-checklist">
+            {node.reviewRules.checklist.length ? (
+              node.reviewRules.checklist.map(item => (
+                <li key={item}>
+                  <Codicon name="check" size="0.75rem" />
+                  {item}
+                </li>
+              ))
+            ) : (
+              <li>{copy.noExplicitReviewRules}</li>
+            )}
+          </ul>
+        </section>
+
+        <section>
+          <h3>Artifacts</h3>
+          <div className="workflow-artifacts">
+            {nodeArtifacts.length ? (
+              nodeArtifacts.map(artifact => (
+                <div className="workflow-artifact-row" key={artifact.id}>
+                  <Codicon name="file-code" size="0.8125rem" />
+                  <span title={artifact.path}>{artifact.name}</span>
                 </div>
               ))
             ) : (
-              <div className="workflow-muted">{copy.noNodeReferences}</div>
+              <div className="workflow-muted">{copy.noArtifacts}</div>
             )}
           </div>
-        )}
-      </section>
+        </section>
 
-      <section>
-        <h3>Review Rules</h3>
-        <ul className="workflow-checklist">
-          {node.reviewRules.checklist.length ? (
-            node.reviewRules.checklist.map(item => (
-              <li key={item}>
-                <Codicon name="check" size="0.75rem" />
-                {item}
-              </li>
-            ))
-          ) : (
-            <li>{copy.noExplicitReviewRules}</li>
-          )}
-        </ul>
-      </section>
+        <section>
+          <button
+            className="workflow-collapsible-heading"
+            onClick={() => setChangesOpen(value => !value)}
+            type="button"
+          >
+            <h3>{copy.fileChangeReview}</h3>
+            <span>{fileChanges.length}</span>
+            <Codicon name={changesOpen ? 'chevron-down' : 'chevron-right'} size="0.8125rem" />
+          </button>
+          {changesOpen && (
+            <div className="workflow-file-changes">
+              {fileChanges.length ? (
+                fileChanges.map(change => {
+                  const changeKey = `${change.status}-${change.path}`
+                  const canPreview = fileChangeCanPreview(change)
+                  const previewOpen = openFilePreviews.has(changeKey)
 
-      <section>
-        <h3>Artifacts</h3>
-        <div className="workflow-artifacts">
-          {nodeArtifacts.length ? (
-            nodeArtifacts.map(artifact => (
-              <div className="workflow-artifact-row" key={artifact.id}>
-                <Codicon name="file-code" size="0.8125rem" />
-                <span title={artifact.path}>{artifact.name}</span>
-              </div>
-            ))
-          ) : (
-            <div className="workflow-muted">{copy.noArtifacts}</div>
-          )}
-        </div>
-      </section>
+                  const meta = [
+                    change.status,
+                    change.isArtifact ? 'artifact' : null,
+                    change.truncated ? 'truncated' : null,
+                    change.isBinary ? copy.binaryFile : null
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')
 
-      <section>
-        <button className="workflow-collapsible-heading" onClick={() => setChangesOpen(value => !value)} type="button">
-          <h3>{copy.fileChangeReview}</h3>
-          <span>{fileChanges.length}</span>
-          <Codicon name={changesOpen ? 'chevron-down' : 'chevron-right'} size="0.8125rem" />
-        </button>
-        {changesOpen && (
-          <div className="workflow-file-changes">
-            {fileChanges.length ? (
-              fileChanges.map(change => {
-                const changeKey = `${change.status}-${change.path}`
-                const canPreview = fileChangeCanPreview(change)
-                const previewOpen = openFilePreviews.has(changeKey)
-                const meta = [
-                  change.status,
-                  change.isArtifact ? 'artifact' : null,
-                  change.truncated ? 'truncated' : null,
-                  change.isBinary ? copy.binaryFile : null
-                ].filter(Boolean).join(' · ')
-
-                return (
-                  <div className="workflow-file-change" key={changeKey}>
-                    <div className="workflow-file-change__header">
-                      <button
-                        aria-expanded={canPreview ? previewOpen : undefined}
-                        className="workflow-file-change__summary"
-                        disabled={!canPreview}
-                        onClick={() => canPreview && toggleFilePreview(changeKey)}
-                        type="button"
-                      >
-                        <Codicon name={canPreview ? (previewOpen ? 'chevron-down' : 'chevron-right') : 'circle-slash'} size="0.8125rem" />
-                        <span>
-                          <strong>{change.path}</strong>
-                          <small>{meta}</small>
-                        </span>
-                      </button>
-                      <div className="workflow-file-change__actions">
-                        {canPreview && (
-                          <Button onClick={() => toggleFilePreview(changeKey)} size="xs" type="button" variant="ghost">
-                            {previewOpen ? copy.hidePreview : copy.preview}
+                  return (
+                    <div className="workflow-file-change" key={changeKey}>
+                      <div className="workflow-file-change__header">
+                        <button
+                          aria-expanded={canPreview ? previewOpen : undefined}
+                          className="workflow-file-change__summary"
+                          disabled={!canPreview}
+                          onClick={() => canPreview && toggleFilePreview(changeKey)}
+                          type="button"
+                        >
+                          <Codicon
+                            name={canPreview ? (previewOpen ? 'chevron-down' : 'chevron-right') : 'circle-slash'}
+                            size="0.8125rem"
+                          />
+                          <span>
+                            <strong>{change.path}</strong>
+                            <small>{meta}</small>
+                          </span>
+                        </button>
+                        <div className="workflow-file-change__actions">
+                          {canPreview && (
+                            <Button
+                              onClick={() => toggleFilePreview(changeKey)}
+                              size="xs"
+                              type="button"
+                              variant="ghost"
+                            >
+                              {previewOpen ? copy.hidePreview : copy.preview}
+                            </Button>
+                          )}
+                          <Button
+                            onClick={() => onOpenFile(resolveProjectPath(root, change.path))}
+                            size="xs"
+                            type="button"
+                            variant="outline"
+                          >
+                            <Codicon name="go-to-file" size="0.8125rem" />
+                            {copy.open}
                           </Button>
-                        )}
-                        <Button onClick={() => onOpenFile(resolveProjectPath(root, change.path))} size="xs" type="button" variant="outline">
-                          <Codicon name="go-to-file" size="0.8125rem" />
-                          {copy.open}
-                        </Button>
+                        </div>
                       </div>
+                      {previewOpen && canPreview ? (
+                        <pre>{change.diff || copy.noDiff}</pre>
+                      ) : !canPreview ? (
+                        <div className="workflow-file-change__notice">
+                          {change.isBinary ? copy.binaryPreviewOmitted : copy.noTextPreviewAvailable}
+                        </div>
+                      ) : null}
                     </div>
-                    {previewOpen && canPreview ? (
-                      <pre>{change.diff || copy.noDiff}</pre>
-                    ) : !canPreview ? (
-                      <div className="workflow-file-change__notice">
-                        {change.isBinary ? copy.binaryPreviewOmitted : copy.noTextPreviewAvailable}
-                      </div>
-                    ) : null}
-                  </div>
-                )
-              })
-            ) : (
-              <div className="workflow-muted">{copy.fileChangeReviewEmpty}</div>
-            )}
-          </div>
-        )}
-      </section>
+                  )
+                })
+              ) : (
+                <div className="workflow-muted">{copy.fileChangeReviewEmpty}</div>
+              )}
+            </div>
+          )}
+        </section>
       </div>
 
       <div className="workflow-node-actions">
@@ -1688,11 +1803,18 @@ function TaskDetailDrawer({
                 </SelectContent>
               </Select>
             ) : (
-              <span title={selectedFailureTarget?.node.id}>{copy.failureTarget}: {selectedFailureTarget?.node.title}</span>
+              <span title={selectedFailureTarget?.node.id}>
+                {copy.failureTarget}: {selectedFailureTarget?.node.title}
+              </span>
             )}
           </div>
         )}
-        <Button disabled={!waiting || !runId} onClick={() => runId && onNodeAction('pass', node.id, runId)} size="sm" type="button">
+        <Button
+          disabled={!waiting || !runId}
+          onClick={() => runId && onNodeAction('pass', node.id, runId)}
+          size="sm"
+          type="button"
+        >
           <Codicon name="pass" size="0.875rem" />
           {decisionNode ? copy.pass : copy.confirm}
         </Button>
@@ -1716,11 +1838,23 @@ function TaskDetailDrawer({
             {copy.fail}
           </Button>
         )}
-        <Button disabled={!runId} onClick={() => runId && onNodeAction('retry', node.id, runId)} size="sm" type="button" variant="outline">
+        <Button
+          disabled={!runId}
+          onClick={() => runId && onNodeAction('retry', node.id, runId)}
+          size="sm"
+          type="button"
+          variant="outline"
+        >
           <Codicon name="refresh" size="0.875rem" />
           {copy.retry}
         </Button>
-        <Button disabled={!runId} onClick={() => runId && onNodeAction('skip', node.id, runId)} size="sm" type="button" variant="outline">
+        <Button
+          disabled={!runId}
+          onClick={() => runId && onNodeAction('skip', node.id, runId)}
+          size="sm"
+          type="button"
+          variant="outline"
+        >
           <Codicon name="debug-step-over" size="0.875rem" />
           {copy.skip}
         </Button>
@@ -1866,11 +2000,13 @@ function StreamOutputPanel({
   const copy = useWorkflowCopy()
   const transcriptRef = useRef<HTMLDivElement | null>(null)
   const transcriptEndRef = useRef<HTMLDivElement | null>(null)
+
   const [height, setHeight] = useState(() => {
     const stored = Number(window.localStorage.getItem('hermes.workflow.streamHeight') || 260)
 
     return Number.isFinite(stored) ? Math.min(Math.max(stored, 160), Math.round(window.innerHeight * 0.6)) : 260
   })
+
   const [isPinnedToBottom, setIsPinnedToBottom] = useState(true)
   const [showLatestButton, setShowLatestButton] = useState(false)
 
@@ -1998,7 +2134,13 @@ function StreamOutputPanel({
         </div>
       )}
       {expanded && showLatestButton && (
-        <Button className="workflow-latest-messages" onClick={() => scrollToLatest()} size="xs" type="button" variant="outline">
+        <Button
+          className="workflow-latest-messages"
+          onClick={() => scrollToLatest()}
+          size="xs"
+          type="button"
+          variant="outline"
+        >
           <Codicon name="arrow-down" size="0.8125rem" />
           {copy.latestMessages}
         </Button>
@@ -2073,19 +2215,16 @@ function WorkflowChatBox({
     setCompletions([])
   }, [attachments, onSlash, onSubmit, text])
 
-  const insertCompletion = useCallback(
-    (item: WorkflowComposerCompletionItem) => {
-      setText(current => {
-        if (item.type === 'slash') {
-          return current.replace(/\/[\w-]*$/, `${item.text} `)
-        }
+  const insertCompletion = useCallback((item: WorkflowComposerCompletionItem) => {
+    setText(current => {
+      if (item.type === 'slash') {
+        return current.replace(/\/[\w-]*$/, `${item.text} `)
+      }
 
-        return current.replace(/@file:[^\s`]*$/, `${item.text} `)
-      })
-      setCompletions([])
-    },
-    []
-  )
+      return current.replace(/@file:[^\s`]*$/, `${item.text} `)
+    })
+    setCompletions([])
+  }, [])
 
   return (
     <form
@@ -2129,7 +2268,12 @@ function WorkflowChatBox({
       {completions.length > 0 && (
         <div className="workflow-completion-popover">
           {completions.slice(0, 8).map(item => (
-            <button key={`${item.type}-${item.text}`} onClick={() => insertCompletion(item)} onMouseDown={event => event.preventDefault()} type="button">
+            <button
+              key={`${item.type}-${item.text}`}
+              onClick={() => insertCompletion(item)}
+              onMouseDown={event => event.preventDefault()}
+              type="button"
+            >
               <Codicon name={item.type === 'slash' ? 'terminal' : 'file'} size="0.75rem" />
               <span>{item.label}</span>
               {item.detail && <small>{item.detail}</small>}
@@ -2220,16 +2364,16 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
     onSuccess: data => void onComplete(data)
   })
 
-  const busy = startMutation.isPending || messageMutation.isPending || answersMutation.isPending || confirmMutation.isPending
-  const error = errorText(startMutation.error || messageMutation.error || answersMutation.error || confirmMutation.error) || intakeError
+  const busy =
+    startMutation.isPending || messageMutation.isPending || answersMutation.isPending || confirmMutation.isPending
+
+  const error =
+    errorText(startMutation.error || messageMutation.error || answersMutation.error || confirmMutation.error) ||
+    intakeError
 
   return (
     <main className="workflow-intake-page">
-      <WorkflowPageTitlebar
-        icon="graph"
-        subtitle={copy.workflowIntakeSubtitle}
-        title={copy.workflowIntakeTitle}
-      />
+      <WorkflowPageTitlebar icon="graph" subtitle={copy.workflowIntakeSubtitle} title={copy.workflowIntakeTitle} />
       <section aria-label="Workflow intake" className="workflow-intake-layout">
         <div className="workflow-intake-config">
           <div className="workflow-intake-section-heading">
@@ -2296,12 +2440,24 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
               </Button>
             </div>
             <div className="workflow-reference-preview">
-              {references.length ? references.map(path => <span key={path}>{path}</span>) : <span>{copy.noReference}</span>}
+              {references.length ? (
+                references.map(path => <span key={path}>{path}</span>)
+              ) : (
+                <span>{copy.noReference}</span>
+              )}
             </div>
           </div>
 
-          <Button disabled={busy || !name.trim() || Boolean(intakeId)} onClick={() => startMutation.mutate()} type="button">
-            <Codicon name={startMutation.isPending ? 'loading' : 'comment-discussion'} size="0.875rem" spinning={startMutation.isPending} />
+          <Button
+            disabled={busy || !name.trim() || Boolean(intakeId)}
+            onClick={() => startMutation.mutate()}
+            type="button"
+          >
+            <Codicon
+              name={startMutation.isPending ? 'loading' : 'comment-discussion'}
+              size="0.875rem"
+              spinning={startMutation.isPending}
+            />
             {copy.startClarification}
           </Button>
         </div>
@@ -2310,7 +2466,10 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
           <div className="workflow-intake-transcript">
             {messages.length ? (
               messages.map((message, index) => (
-                <div className={cn('workflow-intake-message', message.role === 'user' && 'is-user')} key={`${message.timestamp}-${index}`}>
+                <div
+                  className={cn('workflow-intake-message', message.role === 'user' && 'is-user')}
+                  key={`${message.timestamp}-${index}`}
+                >
                   <span>{message.role === 'user' ? copy.you : 'Hermes'}</span>
                   <CompactMarkdown className="workflow-intake-message-markdown" text={message.content || '...'} />
                 </div>
@@ -2353,7 +2512,11 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
               value={reply}
             />
             <Button disabled={!intakeId || busy || !reply.trim()} size="icon-sm" type="submit">
-              <Codicon name={messageMutation.isPending ? 'loading' : 'send'} size="0.875rem" spinning={messageMutation.isPending} />
+              <Codicon
+                name={messageMutation.isPending ? 'loading' : 'send'}
+                size="0.875rem"
+                spinning={messageMutation.isPending}
+              />
             </Button>
           </form>
         </div>
@@ -2367,13 +2530,23 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
           </div>
           <div className="workflow-intake-stats">
             <span>{projectId ? copy.draftProjectCreated : copy.draftProjectPending}</span>
-            <span>{copy.answeredQuestions}: {answeredCount}</span>
+            <span>
+              {copy.answeredQuestions}: {answeredCount}
+            </span>
           </div>
           <pre>{summary || copy.summaryPlaceholder}</pre>
           {error && <div className="workflow-error">{error}</div>}
           {confirmMutation.isPending && <div className="workflow-status">{copy.startingProjectStatus}</div>}
-          <Button disabled={!intakeId || !ready || Boolean(currentBatch) || confirmMutation.isPending} onClick={() => confirmMutation.mutate()} type="button">
-            <Codicon name={confirmMutation.isPending ? 'loading' : 'sparkle'} size="0.875rem" spinning={confirmMutation.isPending} />
+          <Button
+            disabled={!intakeId || !ready || Boolean(currentBatch) || confirmMutation.isPending}
+            onClick={() => confirmMutation.mutate()}
+            type="button"
+          >
+            <Codicon
+              name={confirmMutation.isPending ? 'loading' : 'sparkle'}
+              size="0.875rem"
+              spinning={confirmMutation.isPending}
+            />
             {copy.confirmAndGenerate}
           </Button>
         </aside>
@@ -2426,26 +2599,32 @@ function WorkflowClarificationBatchCard({
 
     const answer: WorkflowIntakeAnswer = {
       questionId: question.id,
-      optionId: customAnswer ? selectedOptionId : selectedOption?.id ?? null,
+      optionId: customAnswer ? selectedOptionId : (selectedOption?.id ?? null),
       answer: customAnswer || selectedOption?.label || '',
       custom: Boolean(customAnswer)
     }
+
     const nextAnswers = { ...answers, [question.id]: answer }
     setAnswers(nextAnswers)
     const nextQuestionIndex = questions.findIndex(item => !nextAnswers[item.id])
+
     if (nextQuestionIndex === -1) {
       onSubmit(questions.map(item => nextAnswers[item.id]!))
+
       return
     }
+
     setIndex(nextQuestionIndex)
   }
 
   return (
-    <section className="workflow-clarification-card" aria-label={copy.clarificationQuestions}>
+    <section aria-label={copy.clarificationQuestions} className="workflow-clarification-card">
       <div className="workflow-clarification-card__header">
         <div>
           <span>{copy.clarificationQuestions}</span>
-          <strong>{index + 1}/{questions.length}</strong>
+          <strong>
+            {index + 1}/{questions.length}
+          </strong>
         </div>
         <div className="workflow-clarification-card__nav">
           <Button
@@ -2585,7 +2764,7 @@ function toFlowNodes(workflow: Workflow): FlowNode[] {
   }))
 }
 
-function toFlowEdges(workflow: Workflow): FlowEdge[] {
+function toFlowEdges(workflow: Workflow, copy: WorkflowCopy): FlowEdge[] {
   const nodeTitles = new Map(workflow.nodes.map(node => [node.id, node.title]))
 
   return workflow.edges.map(edge => {
@@ -2598,7 +2777,7 @@ function toFlowEdges(workflow: Workflow): FlowEdge[] {
       sourceHandle,
       target: edge.target,
       targetHandle: edge.targetHandle ?? 'input',
-      label: edge.label || (failure ? `Fail to ${nodeTitles.get(edge.target) ?? edge.target}` : undefined),
+      label: edge.label || (failure ? copy.failTo(nodeTitles.get(edge.target) ?? edge.target) : undefined),
       type: failure ? 'smoothstep' : 'default',
       animated: failure,
       markerEnd: failure ? undefined : { type: MarkerType.ArrowClosed },
@@ -2675,6 +2854,7 @@ function parseReviewDecision(value: unknown): ReviewDecision | null {
 
   const data = value as Record<string, unknown>
   const rawDecision = typeof data.decision === 'string' ? data.decision : ''
+
   if (rawDecision !== 'pass' && rawDecision !== 'return' && rawDecision !== 'needs_human') {
     return null
   }
@@ -2712,7 +2892,9 @@ function workflowEventNeedsCue(event: StreamEvent): boolean {
 
 function playWorkflowCue(): void {
   try {
-    const AudioContextCtor = window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    const AudioContextCtor =
+      window.AudioContext || (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+
     if (!AudioContextCtor) {
       return
     }
@@ -2816,7 +2998,11 @@ function streamTranscriptItems(events: StreamEvent[]): WorkflowTranscriptItem[] 
 }
 
 function referenceFromPath(path: string): ReferenceItem {
-  const name = path.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || path
+  const name =
+    path
+      .replace(/[/\\]+$/, '')
+      .split(/[/\\]/)
+      .pop() || path
 
   return {
     id: `ref_${crypto.randomUUID().slice(0, 12)}`,
@@ -2829,7 +3015,12 @@ function referenceFromPath(path: string): ReferenceItem {
 }
 
 function fileName(path: string): string {
-  return path.replace(/[/\\]+$/, '').split(/[/\\]/).pop() || path
+  return (
+    path
+      .replace(/[/\\]+$/, '')
+      .split(/[/\\]/)
+      .pop() || path
+  )
 }
 
 function statusColor(status: WorkflowNodeStatus): string {
@@ -2888,6 +3079,7 @@ function readStoredRightDrawerWidth(): number {
   if (typeof window === 'undefined') {
     return RIGHT_DRAWER_DEFAULT_WIDTH
   }
+
   try {
     const raw = window.localStorage.getItem(RIGHT_DRAWER_WIDTH_KEY)
     const parsed = raw ? Number(raw) : RIGHT_DRAWER_DEFAULT_WIDTH

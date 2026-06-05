@@ -6,6 +6,7 @@ import { writeClipboardText } from '@/components/ui/copy-button'
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog'
 import { ErrorState } from '@/components/ui/error-state'
 import type { DesktopUpdateCommit, DesktopUpdateStage, DesktopUpdateStatus } from '@/global'
+import { useAppCopy } from '@/i18n'
 import { buildCommitChangelog, type CommitGroup } from '@/lib/commit-changelog'
 import { AlertCircle, Check, CheckCircle2, Copy, Loader2, Sparkles, Terminal } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -20,17 +21,6 @@ import {
   setUpdateOverlayOpen,
   type UpdateApplyState
 } from '@/store/updates'
-
-const STAGE_LABELS: Record<DesktopUpdateStage, string> = {
-  idle: 'Getting ready…',
-  prepare: 'Getting ready…',
-  fetch: 'Downloading…',
-  pull: 'Almost there…',
-  pydeps: 'Finishing up…',
-  restart: 'Restarting Hermes…',
-  manual: 'Update from your terminal',
-  error: 'Update paused'
-}
 
 function totalItems(groups: readonly CommitGroup[]) {
   return groups.reduce((sum, g) => sum + g.items.length, 0)
@@ -124,9 +114,11 @@ function IdleView({
   onRetryCheck: () => void
   status: DesktopUpdateStatus | null
 }) {
+  const copy = useAppCopy().updatesOverlay
+
   if (!status && checking) {
     return (
-      <CenteredStatus icon={<Loader2 className="size-6 animate-spin text-primary" />} title="Looking for updates…" />
+      <CenteredStatus icon={<Loader2 className="size-6 animate-spin text-primary" />} title={copy.lookingForUpdates} />
     )
   }
 
@@ -135,11 +127,11 @@ function IdleView({
       <CenteredStatus
         action={
           <Button onClick={onRetryCheck} size="sm">
-            Try again
+            {copy.tryAgain}
           </Button>
         }
         icon={<AlertCircle className="size-6 text-muted-foreground" />}
-        title="Couldn’t check for updates"
+        title={copy.updatesCheckFailed}
       />
     )
   }
@@ -147,9 +139,9 @@ function IdleView({
   if (!status.supported) {
     return (
       <CenteredStatus
-        body={status.message ?? 'This version of Hermes can’t update itself from inside the app.'}
+        body={status.message ?? copy.updateUnavailableSelf}
         icon={<AlertCircle className="size-6 text-muted-foreground" />}
-        title="Update not available"
+        title={copy.updateNotAvailable}
       />
     )
   }
@@ -159,12 +151,12 @@ function IdleView({
       <CenteredStatus
         action={
           <Button disabled={checking} onClick={onRetryCheck} size="sm">
-            Try again
+            {copy.tryAgain}
           </Button>
         }
-        body="Check your connection and try again."
+        body={copy.checkConnection}
         icon={<AlertCircle className="size-6 text-muted-foreground" />}
-        title="Couldn’t check for updates"
+        title={copy.updatesCheckFailed}
       />
     )
   }
@@ -172,9 +164,9 @@ function IdleView({
   if (behind === 0) {
     return (
       <CenteredStatus
-        body="You’re running the latest version."
+        body={copy.latestVersion}
         icon={<CheckCircle2 className="size-7 text-emerald-600 dark:text-emerald-400" />}
-        title="You’re all set"
+        title={copy.youAreAllSet}
       />
     )
   }
@@ -190,10 +182,8 @@ function IdleView({
           <Sparkles className="size-7" />
         </span>
 
-        <DialogTitle className="text-center text-xl">New update available</DialogTitle>
-        <DialogDescription className="text-center text-sm">
-          A new version of Hermes is ready to install.
-        </DialogDescription>
+        <DialogTitle className="text-center text-xl">{copy.newUpdateAvailable}</DialogTitle>
+        <DialogDescription className="text-center text-sm">{copy.newVersionReady}</DialogDescription>
       </div>
 
       <div className="grid gap-3 rounded-xl border border-border/70 bg-muted/20 px-4 py-3">
@@ -214,27 +204,24 @@ function IdleView({
 
       <div className="grid gap-2">
         <Button className="font-semibold" onClick={onInstall} size="lg">
-          Update now
+          {copy.updateNow}
         </Button>
         <button
           className="text-center text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
           onClick={onLater}
           type="button"
         >
-          Maybe later
+          {copy.maybeLater}
         </button>
       </div>
 
-      {remaining > 0 && (
-        <p className="text-center text-xs text-muted-foreground">
-          + {remaining} more change{remaining === 1 ? '' : 's'} included.
-        </p>
-      )}
+      {remaining > 0 && <p className="text-center text-xs text-muted-foreground">{copy.remainingChanges(remaining)}</p>}
     </div>
   )
 }
 
 function ManualView({ command, onDone }: { command: string; onDone: () => void }) {
+  const copy = useAppCopy().updatesOverlay
   const [copied, setCopied] = useState(false)
 
   const handleCopy = () => {
@@ -251,10 +238,8 @@ function ManualView({ command, onDone }: { command: string; onDone: () => void }
           <Terminal className="size-7" />
         </span>
 
-        <DialogTitle className="text-center text-xl">Update from your terminal</DialogTitle>
-        <DialogDescription className="text-center text-sm">
-          You installed Hermes from the command line, so updates run there too. Paste this into your terminal:
-        </DialogDescription>
+        <DialogTitle className="text-center text-xl">{copy.updateFromTerminal}</DialogTitle>
+        <DialogDescription className="text-center text-sm">{copy.manualDescription}</DialogDescription>
       </div>
 
       <button
@@ -270,30 +255,29 @@ function ManualView({ command, onDone }: { command: string; onDone: () => void }
           {copied ? (
             <>
               <Check className="size-3.5 text-emerald-600 dark:text-emerald-400" />
-              Copied
+              {copy.copied}
             </>
           ) : (
             <>
               <Copy className="size-3.5" />
-              Copy
+              {copy.copy}
             </>
           )}
         </span>
       </button>
 
-      <p className="text-center text-xs text-muted-foreground">
-        Hermes will pick up the new version next time you launch it.
-      </p>
+      <p className="text-center text-xs text-muted-foreground">{copy.manualNextLaunch}</p>
 
       <Button className="font-semibold" onClick={onDone} size="lg" variant="outline">
-        Done
+        {copy.done}
       </Button>
     </div>
   )
 }
 
 function ApplyingView({ apply }: { apply: UpdateApplyState }) {
-  const label = STAGE_LABELS[apply.stage] ?? 'Updating Hermes…'
+  const copy = useAppCopy().updatesOverlay
+  const label = copy.stageLabels[apply.stage as DesktopUpdateStage] ?? copy.updatingHermes
 
   const percent =
     typeof apply.percent === 'number' && Number.isFinite(apply.percent)
@@ -308,9 +292,7 @@ function ApplyingView({ apply }: { apply: UpdateApplyState }) {
         </span>
 
         <DialogTitle className="text-center text-xl">{label}</DialogTitle>
-        <DialogDescription className="text-center text-sm">
-          The Hermes updater will take over in its own window and reopen Hermes when it&rsquo;s done.
-        </DialogDescription>
+        <DialogDescription className="text-center text-sm">{copy.applyingDescription}</DialogDescription>
       </div>
 
       <div className="h-2 overflow-hidden rounded-full bg-muted">
@@ -323,29 +305,33 @@ function ApplyingView({ apply }: { apply: UpdateApplyState }) {
         />
       </div>
 
-      <p className="text-center text-xs text-muted-foreground">Hermes will close to apply the update.</p>
+      <p className="text-center text-xs text-muted-foreground">{copy.applyCloseNotice}</p>
     </div>
   )
 }
 
 function ErrorView({ message, onDismiss, onRetry }: { message: string; onDismiss: () => void; onRetry: () => void }) {
+  const copy = useAppCopy().updatesOverlay
+
   return (
     <ErrorState
       className="px-6 pb-6 pt-7 pr-8"
       description={
         <DialogDescription className="max-w-prose text-center text-sm leading-5 text-muted-foreground">
-          {message || 'No worries — nothing was lost. You can try again now.'}
+          {message || copy.noWorriesTryAgain}
         </DialogDescription>
       }
       title={
-        <DialogTitle className="text-center text-xl font-semibold tracking-tight">Update didn’t finish</DialogTitle>
+        <DialogTitle className="text-center text-xl font-semibold tracking-tight">
+          {copy.updateDidNotFinish}
+        </DialogTitle>
       }
     >
       <Button className="font-semibold" onClick={onRetry} size="lg">
-        Try again
+        {copy.tryAgain}
       </Button>
       <Button onClick={onDismiss} variant="text">
-        Not now
+        {copy.notNow}
       </Button>
     </ErrorState>
   )

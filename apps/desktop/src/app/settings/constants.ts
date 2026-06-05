@@ -11,6 +11,7 @@ import {
   Sun,
   Wrench
 } from '@/lib/icons'
+import type { AppLanguage } from '@/store/app-language'
 import type { ThemeMode } from '@/themes/context'
 
 import type { DesktopConfigSection } from './types'
@@ -465,3 +466,140 @@ export const MODE_OPTIONS: ModeOption[] = [
   { id: 'dark', label: 'Dark', icon: Moon },
   { id: 'system', label: 'System', icon: Monitor }
 ]
+
+const FIELD_LABELS_ZH: Record<string, string> = {
+  model: '默认模型',
+  model_context_length: '上下文窗口',
+  fallback_providers: '备用模型',
+  toolsets: '启用工具集',
+  timezone: '时区',
+  'display.personality': '助手风格',
+  'display.show_reasoning': '推理区块',
+  'agent.max_turns': '最大 Agent 步数',
+  'agent.image_input_mode': '图片附件',
+  'terminal.cwd': '工作目录',
+  'terminal.backend': '执行后端',
+  'terminal.timeout': '命令超时',
+  'terminal.persistent_shell': '持久 Shell',
+  'terminal.env_passthrough': '环境变量透传',
+  file_read_max_chars: '文件读取上限',
+  'tool_output.max_bytes': '终端输出上限',
+  'tool_output.max_lines': '文件分页上限',
+  'tool_output.max_line_length': '行长度上限',
+  'code_execution.mode': '代码执行模式',
+  'approvals.mode': '审批模式',
+  'approvals.timeout': '审批超时',
+  'approvals.mcp_reload_confirm': '确认 MCP 重载',
+  command_allowlist: '命令白名单',
+  'security.redact_secrets': '隐藏密钥',
+  'security.allow_private_urls': '允许私有 URL',
+  'browser.allow_private_urls': '浏览器私有 URL',
+  'browser.auto_local_for_private_urls': '私有 URL 使用本地浏览器',
+  'checkpoints.enabled': '文件检查点',
+  'checkpoints.max_snapshots': '检查点数量上限',
+  'voice.record_key': '语音快捷键',
+  'voice.max_recording_seconds': '最大录音时长',
+  'voice.auto_tts': '自动朗读回复',
+  'stt.enabled': '语音转文字',
+  'stt.provider': '语音识别服务',
+  'stt.local.model': '本地转写模型',
+  'stt.local.language': '转写语言',
+  'stt.elevenlabs.model_id': 'ElevenLabs STT 模型',
+  'stt.elevenlabs.language_code': 'ElevenLabs 语言',
+  'stt.elevenlabs.tag_audio_events': '标注音频事件',
+  'stt.elevenlabs.diarize': '说话人分离',
+  'tts.provider': '文字转语音服务',
+  'tts.edge.voice': 'Edge 声音',
+  'tts.openai.model': 'OpenAI TTS 模型',
+  'tts.openai.voice': 'OpenAI 声音',
+  'tts.elevenlabs.voice_id': 'ElevenLabs 声音',
+  'tts.elevenlabs.model_id': 'ElevenLabs 模型',
+  'memory.memory_enabled': '持久记忆',
+  'memory.user_profile_enabled': '用户画像',
+  'memory.memory_char_limit': '记忆预算',
+  'memory.user_char_limit': '画像预算',
+  'memory.provider': '记忆服务',
+  'context.engine': '上下文引擎',
+  'compression.enabled': '自动压缩',
+  'compression.threshold': '压缩阈值',
+  'compression.target_ratio': '压缩目标比例',
+  'compression.protect_last_n': '保护最近消息',
+  'agent.api_max_retries': 'API 重试次数',
+  'agent.service_tier': '服务等级',
+  'agent.tool_use_enforcement': '工具使用约束',
+  'delegation.model': '子 Agent 模型',
+  'delegation.provider': '子 Agent 服务商',
+  'delegation.max_iterations': '子 Agent 轮次上限',
+  'delegation.max_concurrent_children': '并行子 Agent',
+  'delegation.child_timeout_seconds': '子 Agent 超时',
+  'delegation.reasoning_effort': '子 Agent 推理强度'
+}
+
+const FIELD_DESCRIPTIONS_ZH: Record<string, string> = {
+  model: '新对话默认使用的模型，除非你在输入区另行选择。',
+  model_context_length: '填 0 时使用所选模型自动检测到的上下文窗口。',
+  fallback_providers: '默认模型失败时依次尝试的 provider:model 备用项。',
+  'display.personality': '新会话默认使用的助手表达风格。',
+  timezone: 'Hermes 需要本地时间上下文时使用；留空则使用系统时区。',
+  'display.show_reasoning': '后端提供推理内容时在界面中显示推理区块。',
+  'agent.image_input_mode': '控制图片附件如何发送给模型。',
+  'terminal.cwd': '工具和终端操作默认使用的项目目录。',
+  'code_execution.mode': '控制代码执行在当前项目中的作用域严格程度。',
+  'terminal.persistent_shell': '后端支持时，在命令之间保留 Shell 状态。',
+  'terminal.env_passthrough': '传入工具执行环境的环境变量。',
+  file_read_max_chars: 'Hermes 单次文件读取允许读取的最大字符数。',
+  'approvals.mode': 'Hermes 如何处理需要明确审批的命令。',
+  'approvals.timeout': '审批提示等待响应的时间。',
+  'security.redact_secrets': '尽可能从模型可见内容中隐藏检测到的密钥。',
+  'checkpoints.enabled': '文件编辑前创建可回滚快照。',
+  'memory.memory_enabled': '保存可帮助未来会话的持久记忆。',
+  'memory.user_profile_enabled': '维护一份紧凑的用户偏好画像。',
+  'context.engine': '长对话接近上下文上限时的管理策略。',
+  'compression.enabled': '对话变大时压缩较早上下文。',
+  'voice.auto_tts': '自动朗读助手回复。',
+  'stt.enabled': '启用本地或服务商提供的语音转写。',
+  'stt.elevenlabs.language_code': '可选 ISO-639-3 语言代码；留空则让 ElevenLabs 自动检测。',
+  'agent.max_turns': 'Hermes 停止一次运行前允许的工具调用轮次上限。'
+}
+
+const SECTION_LABELS_ZH: Record<DesktopConfigSection['id'], string> = {
+  advanced: '高级',
+  appearance: '外观',
+  chat: '对话',
+  memory: '记忆与上下文',
+  model: '模型',
+  safety: '安全',
+  voice: '语音',
+  workspace: '工作区'
+}
+
+export function fieldLabelsFor(language: AppLanguage): Record<string, string> {
+  return language === 'zh' ? { ...FIELD_LABELS, ...FIELD_LABELS_ZH } : FIELD_LABELS
+}
+
+export function fieldDescriptionsFor(language: AppLanguage): Record<string, string> {
+  return language === 'zh' ? { ...FIELD_DESCRIPTIONS, ...FIELD_DESCRIPTIONS_ZH } : FIELD_DESCRIPTIONS
+}
+
+export function sectionsFor(language: AppLanguage): DesktopConfigSection[] {
+  if (language !== 'zh') {
+    return SECTIONS
+  }
+
+  return SECTIONS.map(section => ({
+    ...section,
+    label: SECTION_LABELS_ZH[section.id] ?? section.label
+  }))
+}
+
+export function modeOptionsFor(language: AppLanguage): ModeOption[] {
+  if (language !== 'zh') {
+    return MODE_OPTIONS
+  }
+
+  return [
+    { id: 'light', label: '浅色', icon: Sun },
+    { id: 'dark', label: '深色', icon: Moon },
+    { id: 'system', label: '跟随系统', icon: Monitor }
+  ]
+}

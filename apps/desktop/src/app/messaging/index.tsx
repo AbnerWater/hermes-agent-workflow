@@ -14,6 +14,7 @@ import {
   type MessagingPlatformInfo,
   updateMessagingPlatform
 } from '@/hermes'
+import { useAppCopy } from '@/i18n'
 import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -32,6 +33,7 @@ interface MessagingViewProps extends React.ComponentProps<'section'> {
 }
 
 type EditMap = Record<string, Record<string, string>>
+type MessagingCopy = ReturnType<typeof useAppCopy>['messaging']
 
 const STATE_LABELS: Record<string, string> = {
   connected: 'Connected',
@@ -57,7 +59,10 @@ const HINT_BY_STATE: Record<string, string> = {
   gateway_stopped: 'Start the gateway from the status bar to connect.'
 }
 
-const stateLabel = (state?: null | string) => (state ? STATE_LABELS[state] || state.replace(/_/g, ' ') : 'Unknown')
+const stateLabel = (state: null | string | undefined, copy: MessagingCopy) =>
+  state
+    ? (copy.stateLabels as Record<string, string>)[state] || STATE_LABELS[state] || state.replace(/_/g, ' ')
+    : copy.stateLabels.unknown
 
 function stateTone({ enabled, state }: MessagingPlatformInfo): StatusTone {
   if (!enabled) {
@@ -219,18 +224,22 @@ const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: str
   }
 }
 
-function fieldCopy(field: MessagingEnvVarInfo) {
-  const copy = FIELD_COPY[field.key] || {}
+function fieldCopy(field: MessagingEnvVarInfo, messagingCopy: MessagingCopy) {
+  const base = FIELD_COPY[field.key] || {}
+
+  const copy =
+    (messagingCopy.fields as Record<string, { help?: string; label?: string; placeholder?: string }>)[field.key] || {}
 
   return {
-    label: copy.label || field.prompt || field.key,
-    help: copy.help || field.description,
-    placeholder: copy.placeholder || field.prompt,
-    advanced: Boolean(copy.advanced || field.advanced)
+    label: copy.label || base.label || field.prompt || field.key,
+    help: copy.help || base.help || field.description,
+    placeholder: copy.placeholder || base.placeholder || field.prompt,
+    advanced: Boolean(base.advanced || field.advanced)
   }
 }
 
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
+  const copy = useAppCopy().messaging
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   const [edits, setEdits] = useState<EditMap>({})
   const [query, setQuery] = useState('')
@@ -239,24 +248,27 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   const platformIds = useMemo(() => platforms?.map(p => p.id) ?? [], [platforms])
   const [selectedId, setSelectedId] = useRouteEnumParam('platform', platformIds, platformIds[0] ?? '')
 
-  const refreshPlatforms = useCallback(async (silent = false) => {
-    if (!silent) {
-      setRefreshing(true)
-    }
+  const refreshPlatforms = useCallback(
+    async (silent = false) => {
+      if (!silent) {
+        setRefreshing(true)
+      }
 
-    try {
-      const result = await getMessagingPlatforms()
-      setPlatforms(result.platforms)
-    } catch (err) {
-      if (!silent) {
-        notifyError(err, 'Messaging platforms failed to load')
+      try {
+        const result = await getMessagingPlatforms()
+        setPlatforms(result.platforms)
+      } catch (err) {
+        if (!silent) {
+          notifyError(err, copy.failedLoadPlatforms)
+        }
+      } finally {
+        if (!silent) {
+          setRefreshing(false)
+        }
       }
-    } finally {
-      if (!silent) {
-        setRefreshing(false)
-      }
-    }
-  }, [])
+    },
+    [copy.failedLoadPlatforms]
+  )
 
   useRefreshHotkey(() => void refreshPlatforms())
 
@@ -330,11 +342,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       )
       notify({
         kind: 'success',
-        title: enabled ? `${platform.name} enabled` : `${platform.name} disabled`,
-        message: 'Restart the gateway for this change to take effect.'
+        title: enabled ? copy.enabled(platform.name) : copy.disabled(platform.name),
+        message: copy.restartGatewayChange
       })
     } catch (err) {
-      notifyError(err, `Failed to update ${platform.name}`)
+      notifyError(err, copy.failedUpdate(platform.name))
     } finally {
       setSaving(null)
     }
@@ -355,11 +367,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       await refreshPlatforms()
       notify({
         kind: 'success',
-        title: `${platform.name} setup saved`,
-        message: 'Restart the gateway to reconnect with the new credentials.'
+        title: copy.setupSaved(platform.name),
+        message: copy.restartGatewayReconnect
       })
     } catch (err) {
-      notifyError(err, `Failed to save ${platform.name}`)
+      notifyError(err, copy.failedSave(platform.name))
     } finally {
       setSaving(null)
     }
@@ -378,9 +390,9 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         }
       }))
       await refreshPlatforms()
-      notify({ kind: 'success', title: `${key} cleared`, message: `${platform.name} setup was updated.` })
+      notify({ kind: 'success', title: copy.cleared(key), message: copy.setupUpdated(platform.name) })
     } catch (err) {
-      notifyError(err, `Failed to clear ${key}`)
+      notifyError(err, copy.failedClear(key))
     } finally {
       setSaving(null)
     }
@@ -391,11 +403,11 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       {...props}
       onSearchChange={setQuery}
       searchHidden={(platforms?.length ?? 0) === 0}
-      searchPlaceholder="Search messaging..."
+      searchPlaceholder={copy.searchPlaceholder}
       searchValue={query}
     >
       {!platforms ? (
-        <PageLoader label="Loading messaging platforms..." />
+        <PageLoader label={copy.loadingPlatforms} />
       ) : (
         <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[14rem_minmax(0,1fr)]">
           <aside className="min-h-0 overflow-y-auto p-2">
@@ -415,6 +427,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           <main className="min-h-0 overflow-hidden">
             {selected && (
               <PlatformDetail
+                copy={copy}
                 edits={edits[selected.id] || {}}
                 onClear={key => void handleClear(selected, key)}
                 onEdit={(key, value) =>
@@ -469,6 +482,7 @@ function PlatformRow({
 }
 
 function PlatformDetail({
+  copy,
   edits,
   onClear,
   onEdit,
@@ -477,6 +491,7 @@ function PlatformDetail({
   platform,
   saving
 }: {
+  copy: MessagingCopy
   edits: Record<string, string>
   onClear: (key: string) => void
   onEdit: (key: string, value: string) => void
@@ -489,8 +504,8 @@ function PlatformDetail({
 
   const hasEdits = Object.keys(trimEdits(edits)).length > 0
   const requiredFields = platform.env_vars.filter(field => field.required)
-  const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field).advanced)
-  const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field).advanced)
+  const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field, copy).advanced)
+  const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field, copy).advanced)
   const hiddenCount = advancedFields.length
   const isSavingEnv = saving === `env:${platform.id}`
 
@@ -506,13 +521,13 @@ function PlatformDetail({
                 {platform.description}
               </p>
               <div className="mt-3 flex flex-wrap items-center gap-2">
-                <StatePill tone={stateTone(platform)}>{stateLabel(platform.state)}</StatePill>
+                <StatePill tone={stateTone(platform)}>{stateLabel(platform.state, copy)}</StatePill>
                 <SetupPill active={platform.configured}>
-                  {platform.configured ? 'Credentials set' : 'Needs setup'}
+                  {platform.configured ? copy.credentialsSet : copy.needsSetup}
                 </SetupPill>
-                {!platform.gateway_running && <SetupPill active={false}>Messaging gateway stopped</SetupPill>}
+                {!platform.gateway_running && <SetupPill active={false}>{copy.gatewayStopped}</SetupPill>}
               </div>
-              <PlatformHint platform={platform} />
+              <PlatformHint copy={copy} platform={platform} />
             </div>
           </header>
 
@@ -524,14 +539,14 @@ function PlatformDetail({
           )}
 
           <section>
-            <SectionTitle>Get your credentials</SectionTitle>
+            <SectionTitle>{copy.getCredentials}</SectionTitle>
             <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-              {introCopy(platform)}
+              {introCopy(platform, copy)}
             </p>
             <div className="mt-3">
               <Button asChild size="sm" variant="textStrong">
                 <a href={platform.docs_url} rel="noreferrer" target="_blank">
-                  Open setup guide
+                  {copy.openSetupGuide}
                   <ExternalLink className="size-3.5" />
                 </a>
               </Button>
@@ -539,11 +554,12 @@ function PlatformDetail({
           </section>
 
           <section>
-            <SectionTitle>Required</SectionTitle>
+            <SectionTitle>{copy.required}</SectionTitle>
             <div className="mt-3 grid gap-1">
               {requiredFields.length > 0 ? (
                 requiredFields.map(field => (
                   <MessagingField
+                    copy={copy}
                     edits={edits}
                     field={field}
                     key={field.key}
@@ -554,7 +570,7 @@ function PlatformDetail({
                 ))
               ) : (
                 <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-                  This platform does not need a token here. Use the setup guide above, then enable it below.
+                  {copy.noTokenNeeded}
                 </p>
               )}
             </div>
@@ -562,10 +578,11 @@ function PlatformDetail({
 
           {optionalFields.length > 0 && (
             <section>
-              <SectionTitle>Recommended</SectionTitle>
+              <SectionTitle>{copy.recommended}</SectionTitle>
               <div className="mt-3 grid gap-1">
                 {optionalFields.map(field => (
                   <MessagingField
+                    copy={copy}
                     edits={edits}
                     field={field}
                     key={field.key}
@@ -585,13 +602,14 @@ function PlatformDetail({
                 onClick={() => setShowAdvanced(value => !value)}
                 type="button"
               >
-                <span>Advanced ({hiddenCount})</span>
+                <span>{copy.advancedCount(hiddenCount)}</span>
                 <DisclosureCaret open={showAdvanced} size="0.875rem" />
               </button>
               {showAdvanced && (
                 <div className="mt-3 grid gap-1">
                   {advancedFields.map(field => (
                     <MessagingField
+                      copy={copy}
                       edits={edits}
                       field={field}
                       key={field.key}
@@ -610,7 +628,7 @@ function PlatformDetail({
       <footer className="bg-(--ui-chat-surface-background) px-5 py-2.5">
         <div className="mx-auto flex max-w-2xl flex-wrap items-center gap-2">
           <Switch
-            aria-label={platform.enabled ? `Disable ${platform.name}` : `Enable ${platform.name}`}
+            aria-label={platform.enabled ? copy.disablePlatform(platform.name) : copy.enablePlatform(platform.name)}
             checked={platform.enabled}
             disabled={saving === `enabled:${platform.id}`}
             onCheckedChange={onToggle}
@@ -618,10 +636,10 @@ function PlatformDetail({
           />
 
           <div className="ml-auto flex items-center gap-2">
-            {hasEdits && <span className="text-xs text-muted-foreground">Unsaved changes</span>}
+            {hasEdits && <span className="text-xs text-muted-foreground">{copy.unsavedChanges}</span>}
             <Button disabled={!hasEdits || isSavingEnv} onClick={onSave} size="sm">
               <Save />
-              {isSavingEnv ? 'Saving...' : 'Save changes'}
+              {isSavingEnv ? copy.saving : copy.saveChanges}
             </Button>
           </div>
         </div>
@@ -667,22 +685,25 @@ const PLATFORM_INTRO: Record<string, string> = {
     'Run an HTTP server that other tools (GitHub, GitLab, custom apps) can POST to. Use the secret to verify signatures.'
 }
 
-const introCopy = (platform: MessagingPlatformInfo) => PLATFORM_INTRO[platform.id] || platform.description
+const introCopy = (platform: MessagingPlatformInfo, copy: MessagingCopy) =>
+  (copy.intros as Record<string, string>)[platform.id] || PLATFORM_INTRO[platform.id] || platform.description
 
 function MessagingField({
+  copy: messagingCopy,
   edits,
   field,
   onClear,
   onEdit,
   saving
 }: {
+  copy: MessagingCopy
   edits: Record<string, string>
   field: MessagingEnvVarInfo
   onClear: (key: string) => void
   onEdit: (key: string, value: string) => void
   saving: string | null
 }) {
-  const copy = fieldCopy(field)
+  const copy = fieldCopy(field, messagingCopy)
   const fieldId = `messaging-field-${field.key}`
 
   return (
@@ -693,12 +714,12 @@ function MessagingField({
             className={CREDENTIAL_CONTROL_CLASS}
             id={fieldId}
             onChange={event => onEdit(field.key, event.target.value)}
-            placeholder={field.is_set ? field.redacted_value || 'Replace current value' : copy.placeholder}
+            placeholder={field.is_set ? field.redacted_value || messagingCopy.replaceCurrentValue : copy.placeholder}
             type={field.is_password ? 'password' : 'text'}
             value={edits[field.key] || ''}
           />
           {field.url && (
-            <Button asChild className="size-8 shrink-0" title="Open docs" variant="ghost">
+            <Button asChild className="size-8 shrink-0" title={messagingCopy.openDocs} variant="ghost">
               <a href={field.url} rel="noreferrer" target="_blank">
                 <ExternalLink className="size-3.5" />
               </a>
@@ -709,7 +730,7 @@ function MessagingField({
               className="size-8 shrink-0"
               disabled={saving === `clear:${field.key}`}
               onClick={() => onClear(field.key)}
-              title={`Clear ${field.key}`}
+              title={messagingCopy.clearField(field.key)}
               variant="ghost"
             >
               <Trash2 className="size-3.5" />
@@ -721,7 +742,7 @@ function MessagingField({
       title={
         <span className="flex flex-wrap items-center gap-2">
           <label htmlFor={fieldId}>{copy.label}</label>
-          {field.is_set && <span className="text-[0.66rem] font-medium text-primary">Saved</span>}
+          {field.is_set && <span className="text-[0.66rem] font-medium text-primary">{messagingCopy.saved}</span>}
         </span>
       }
     />
@@ -732,12 +753,15 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h4 className="text-[0.7rem] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{children}</h4>
 }
 
-function PlatformHint({ platform }: { platform: MessagingPlatformInfo }) {
+function PlatformHint({ copy, platform }: { copy: MessagingCopy; platform: MessagingPlatformInfo }) {
   if (!platform.enabled || platform.state === 'connected') {
     return null
   }
 
-  const hint = HINT_BY_STATE[platform.state || ''] || (platform.gateway_running ? null : HINT_BY_STATE.gateway_stopped)
+  const hint =
+    (platform.state ? (copy.hints as Record<string, string>)[platform.state] : null) ||
+    HINT_BY_STATE[platform.state || ''] ||
+    (platform.gateway_running ? null : copy.hints.gateway_stopped)
 
   return hint ? <p className="mt-2 text-xs leading-5 text-muted-foreground">{hint}</p> : null
 }

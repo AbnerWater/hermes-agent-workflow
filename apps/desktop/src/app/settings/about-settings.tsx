@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { type AppCopy, useAppCopy } from '@/i18n'
 import { Loader2, RefreshCw, Sparkles } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import {
@@ -18,29 +19,30 @@ import { ListRow, SectionHeading, SettingsContent } from './primitives'
 
 const RELEASE_NOTES_URL = 'https://github.com/NousResearch/hermes-agent/releases'
 
-function relativeTime(ms: number | undefined) {
+function relativeTime(ms: number | undefined, copy: AppCopy['settings']) {
   if (!ms) {
-    return 'never'
+    return copy.relativeNever
   }
 
   const diff = Date.now() - ms
 
   if (diff < 60_000) {
-    return 'just now'
+    return copy.relativeJustNow
   }
 
   if (diff < 3_600_000) {
-    return `${Math.round(diff / 60_000)} min ago`
+    return copy.relativeMinutesAgo(Math.round(diff / 60_000))
   }
 
   if (diff < 86_400_000) {
-    return `${Math.round(diff / 3_600_000)} hours ago`
+    return copy.relativeHoursAgo(Math.round(diff / 3_600_000))
   }
 
-  return `${Math.round(diff / 86_400_000)} days ago`
+  return copy.relativeDaysAgo(Math.round(diff / 86_400_000))
 }
 
 export function AboutSettings() {
+  const copy = useAppCopy().settings
   const version = useStore($desktopVersion)
   const status = useStore($updateStatus)
   const apply = useStore($updateApply)
@@ -69,21 +71,21 @@ export function AboutSettings() {
   let statusTone: 'idle' | 'available' | 'error' = 'idle'
 
   if (!supported) {
-    statusLine = status?.message ?? "This build can't update itself from inside the app."
+    statusLine = status?.message ?? copy.statusBuildCannotUpdate
     statusTone = 'error'
   } else if (status?.error) {
-    statusLine = "We couldn't reach the update server."
+    statusLine = copy.statusCouldNotReachUpdates
     statusTone = 'error'
   } else if (applying) {
-    statusLine = 'An update is currently installing.'
+    statusLine = copy.statusApplyingUpdate
     statusTone = 'available'
   } else if (behind > 0) {
-    statusLine = `A new update is ready (${behind} change${behind === 1 ? '' : 's'} included).`
+    statusLine = copy.statusNewUpdateReady(behind)
     statusTone = 'available'
   } else if (status) {
-    statusLine = "You're on the latest version."
+    statusLine = copy.statusLatestVersion
   } else {
-    statusLine = 'Tap "Check now" to look for updates.'
+    statusLine = copy.statusCheckUpdatesPrompt
   }
 
   return (
@@ -95,13 +97,13 @@ export function AboutSettings() {
         <div>
           <h2 className="text-lg font-semibold tracking-tight">Hermes Desktop</h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            {version?.appVersion ? `Version ${version.appVersion}` : 'Version unavailable'}
+            {version?.appVersion ? copy.version(version.appVersion) : copy.versionUnavailable}
           </p>
         </div>
       </div>
 
       <div className="mx-auto mt-4 w-full max-w-2xl">
-        <SectionHeading icon={RefreshCw} title="Updates" />
+        <SectionHeading icon={RefreshCw} title={copy.updates} />
 
         <div
           className={cn(
@@ -114,8 +116,8 @@ export function AboutSettings() {
           <div className="min-w-0">
             <p className="font-medium">{statusLine}</p>
             <p className="mt-1 text-xs text-muted-foreground">
-              Last checked {relativeTime(status?.fetchedAt)}
-              {justChecked && !checking ? ' · just now' : ''}
+              {copy.lastChecked(relativeTime(status?.fetchedAt, copy))}
+              {justChecked && !checking ? ` · ${copy.relativeJustNow}` : ''}
             </p>
           </div>
 
@@ -127,12 +129,12 @@ export function AboutSettings() {
               variant="textStrong"
             >
               {checking && <Loader2 className="size-3 animate-spin" />}
-              {checking ? 'Checking…' : 'Check now'}
+              {checking ? copy.checking : copy.checkNow}
             </Button>
 
             {behind > 0 && supported && !applying && (
               <Button onClick={() => openUpdatesWindow()} size="sm">
-                See what&apos;s new
+                {copy.seeWhatsNew}
               </Button>
             )}
 
@@ -146,16 +148,16 @@ export function AboutSettings() {
                 rel="noreferrer"
                 target="_blank"
               >
-                Release notes
+                {copy.releaseNotes}
               </a>
             </Button>
           </div>
         </div>
 
         <ListRow
-          description="Hermes checks for updates automatically in the background and lets you know when one is ready."
-          hint={`Branch ${status?.branch ?? 'unknown'} · Commit ${status?.currentSha?.slice(0, 7) ?? 'unknown'}`}
-          title="Automatic updates"
+          description={copy.automaticUpdatesDescription}
+          hint={copy.branchCommit(status?.branch ?? 'unknown', status?.currentSha?.slice(0, 7) ?? 'unknown')}
+          title={copy.automaticUpdates}
         />
       </div>
     </SettingsContent>
