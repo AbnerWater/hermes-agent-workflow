@@ -9,42 +9,71 @@ class FakeWorkflowAgentRunner:
     def run(self, *, project, prompt, session_id, node=None, run=None, system_prompt=None, max_iterations=18, **kwargs):
         from hermes_cli import workflow_api as wf
 
-        if "Create the next clarification batch" in prompt or "Repair the previous workflow intake response" in prompt:
-            if "Latest structured answers JSON:\n[]" in prompt or "Latest structured answers JSON:" not in prompt:
+        if "Continue the conversational planning intake" in prompt or "Repair the previous workflow intake response" in prompt:
+            if (
+                "Latest freeform user message:\n\n" in prompt
+                and "Latest structured answers JSON:\n[]" in prompt
+            ):
                 return wf.WorkflowAgentResult(
                     session_id=session_id,
                     text=json.dumps(
                         {
-                            "reply": "Choose the key workflow planning preferences.",
-                            "ready": False,
-                            "summary": "Initial workflow draft context.",
+                            "reply": "Please clarify the final deliverable and review strictness.",
+                            "phase": "clarifying",
+                            "draftMarkdown": "",
                             "questions": [
                                 {
-                                    "id": "delivery",
-                                    "question": "What should the final delivery optimize for?",
-                                    "detail": "This affects node ordering and review gates.",
+                                    "id": "deliverable",
+                                    "question": "What final deliverable should this workflow produce?",
+                                    "detail": "The deliverable controls the final node and review gate.",
                                     "options": [
                                         {
-                                            "id": "validated-report",
+                                            "id": "report",
                                             "label": "Validated report",
-                                            "description": "Prioritize evidence and acceptance checks.",
+                                            "description": "Generate a report with an explicit review gate.",
                                             "priority": 1,
                                         },
                                         {
-                                            "id": "working-code",
-                                            "label": "Working code",
-                                            "description": "Prioritize implementation and runnable artifacts.",
+                                            "id": "patch",
+                                            "label": "Code patch",
+                                            "description": "Implement code changes and validate them.",
                                             "priority": 2,
                                         },
                                         {
-                                            "id": "research-plan",
-                                            "label": "Research plan",
-                                            "description": "Prioritize exploration and risk discovery.",
+                                            "id": "artifact",
+                                            "label": "Artifact package",
+                                            "description": "Produce a packaged output directory.",
                                             "priority": 3,
                                         },
                                     ],
-                                }
+                                },
+                                {
+                                    "id": "review",
+                                    "question": "How strict should the review be?",
+                                    "detail": "Review strictness decides whether to add a decision node.",
+                                    "options": [
+                                        {
+                                            "id": "strict",
+                                            "label": "Strict gate",
+                                            "description": "Require a pass/fail review node.",
+                                            "priority": 1,
+                                        },
+                                        {
+                                            "id": "standard",
+                                            "label": "Standard check",
+                                            "description": "Use normal completion checks.",
+                                            "priority": 2,
+                                        },
+                                        {
+                                            "id": "light",
+                                            "label": "Light review",
+                                            "description": "Keep review lightweight.",
+                                            "priority": 3,
+                                        },
+                                    ],
+                                },
                             ],
+                            "workflow": None,
                         }
                     ),
                 )
@@ -52,10 +81,40 @@ class FakeWorkflowAgentRunner:
                 session_id=session_id,
                 text=json.dumps(
                     {
-                        "reply": "The workflow plan is ready.",
-                        "ready": True,
-                        "summary": "Final summary from structured clarification answers.",
-                        "questions": [],
+                        "reply": "The workflow draft is ready.",
+                        "phase": "draft_ready",
+                        "draftMarkdown": "# Draft Workflow\n\n- Clarify scope\n- Review strategy\n- Deliver result",
+                        "workflow": {
+                            "title": "Draft Intake Workflow",
+                            "nodes": [
+                                {
+                                    "id": "intake",
+                                    "type": "planning",
+                                    "title": "Clarify scope",
+                                    "description": "Clarify task scope.",
+                                    "reviewRules": {"required": False, "checklist": ["scope"]},
+                                },
+                                {
+                                    "id": "strategy",
+                                    "type": "review",
+                                    "title": "Review strategy",
+                                    "description": "Review the execution strategy.",
+                                    "reviewRules": {"required": True, "checklist": ["plan"]},
+                                },
+                                {
+                                    "id": "delivery",
+                                    "type": "delivery",
+                                    "title": "Deliver result",
+                                    "description": "Deliver the final result.",
+                                    "reviewRules": {"required": False, "checklist": ["done"]},
+                                },
+                            ],
+                            "edges": [
+                                {"id": "edge-intake-strategy", "source": "intake", "target": "strategy", "sourceHandle": "success", "targetHandle": "input"},
+                                {"id": "edge-strategy-delivery", "source": "strategy", "target": "delivery", "sourceHandle": "success", "targetHandle": "input"},
+                                {"id": "edge-strategy-intake", "source": "strategy", "target": "intake", "type": "feedback", "sourceHandle": "failure", "targetHandle": "input"},
+                            ],
+                        },
                     }
                 ),
             )
@@ -416,7 +475,7 @@ def test_workflow_project_generate_and_run_reaches_review_gate(tmp_path, monkeyp
     assert any(event.type == "ai_reply" and event.nodeId == "intake" for event in events)
 
 
-def test_workflow_intake_creates_draft_answers_and_confirms_generation(tmp_path, monkeypatch):
+def test_workflow_intake_plans_draft_then_confirms_project(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
 
     from fastapi import FastAPI
@@ -450,33 +509,24 @@ def test_workflow_intake_creates_draft_answers_and_confirms_generation(tmp_path,
     )
     assert started.status_code == 200
     start_data = started.json()
-    assert start_data["projectId"]
+    assert start_data["projectId"] is None
+    assert start_data["phase"] == "clarifying"
     assert start_data["ready"] is False
-    assert start_data["currentBatch"]["questions"]
-    assert len(start_data["currentBatch"]["questions"][0]["options"]) == 3
-    project = wf._load_project(start_data["projectId"])
-    assert project.status == "clarifying"
-    assert (tmp_path / "intake" / ".agent-workflow" / "intake.state.json").exists()
+    assert start_data["draftWorkflow"] is None
+    assert wf._read_registry() == {}
+    assert not (tmp_path / "intake" / ".agent-workflow" / "project.json").exists()
 
-    question = start_data["currentBatch"]["questions"][0]
-    answered = client.post(
-        f"/api/workflows/intake/{start_data['intakeId']}/answers",
-        json={
-            "answers": [
-                {
-                    "questionId": question["id"],
-                    "optionId": question["options"][0]["id"],
-                    "answer": question["options"][0]["label"],
-                    "custom": False,
-                }
-            ]
-        },
+    planned = client.post(
+        f"/api/workflows/intake/{start_data['intakeId']}/message",
+        json={"message": "Use a validated report with a strict review gate."},
     )
-    assert answered.status_code == 200
-    answered_data = answered.json()
-    assert answered_data["ready"] is True
-    assert answered_data["summary"] == "Final summary from structured clarification answers."
-    assert answered_data["answeredCount"] == 1
+    assert planned.status_code == 200
+    planned_data = planned.json()
+    assert planned_data["phase"] == "draft_ready"
+    assert planned_data["ready"] is True
+    assert planned_data["canConfirm"] is True
+    assert planned_data["draftMarkdown"].startswith("# Draft Workflow")
+    assert planned_data["draftWorkflow"]["nodes"]
 
     confirmed = client.post(
         f"/api/workflows/intake/{start_data['intakeId']}/confirm",
@@ -485,15 +535,90 @@ def test_workflow_intake_creates_draft_answers_and_confirms_generation(tmp_path,
             "goal": "Build a workflow from structured clarification.",
             "root": str(tmp_path / "intake"),
             "references": [],
-            "projectId": start_data["projectId"],
-            "summary": answered_data["summary"],
         },
     )
     assert confirmed.status_code == 200
     bundle = confirmed.json()
-    assert bundle["project"]["id"] == start_data["projectId"]
     assert bundle["project"]["status"] == "generated"
     assert bundle["workflow"]["nodes"]
+    assert (tmp_path / "intake" / ".agent-workflow" / "project.json").exists()
+    assert wf._read_registry()[bundle["project"]["id"]] == bundle["project"]["root"]
+
+
+def test_workflow_intake_structured_answers_create_draft(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from hermes_cli import workflow_api as wf
+
+    monkeypatch.setattr(wf, "_git_init", lambda _root: None)
+    monkeypatch.setattr(wf, "_git", lambda _root, *args: "c" * 40 if args[:2] == ("rev-parse", "HEAD") else "")
+    monkeypatch.setattr(wf, "_agent_runner", FakeWorkflowAgentRunner())
+
+    app = FastAPI()
+    app.include_router(wf.create_workflow_router(lambda _ws: True))
+    client = TestClient(app)
+
+    started = client.post(
+        "/api/workflows/intake/start",
+        json={
+            "name": "Structured Intake Workflow",
+            "goal": "Build a workflow from structured answers.",
+            "root": str(tmp_path / "structured-intake"),
+            "references": [],
+        },
+    )
+    assert started.status_code == 200
+    start_data = started.json()
+    assert start_data["phase"] == "clarifying"
+    assert start_data["currentBatch"]["questions"]
+    assert len(start_data["currentBatch"]["questions"][0]["options"]) == 3
+    assert wf._read_registry() == {}
+
+    incomplete = client.post(
+        f"/api/workflows/intake/{start_data['intakeId']}/answers",
+        json={
+            "answers": [
+                {
+                    "questionId": "deliverable",
+                    "optionId": "report",
+                    "answer": "Validated report",
+                    "custom": False,
+                }
+            ]
+        },
+    )
+    assert incomplete.status_code == 422
+
+    answered = client.post(
+        f"/api/workflows/intake/{start_data['intakeId']}/answers",
+        json={
+            "answers": [
+                {
+                    "questionId": "deliverable",
+                    "optionId": "report",
+                    "answer": "Validated report",
+                    "custom": False,
+                },
+                {
+                    "questionId": "review",
+                    "optionId": None,
+                    "answer": "Use a strict review gate and return loop.",
+                    "custom": True,
+                },
+            ]
+        },
+    )
+    assert answered.status_code == 200
+    answered_data = answered.json()
+    assert answered_data["phase"] == "draft_ready"
+    assert answered_data["ready"] is True
+    assert answered_data["currentBatch"] is None
+    assert answered_data["draftWorkflow"]["nodes"]
+    assert any("Clarification answers:" in message["content"] for message in answered_data["messages"])
+    assert wf._read_registry() == {}
 
 
 def test_workflow_chat_uses_agent_patch(tmp_path, monkeypatch):

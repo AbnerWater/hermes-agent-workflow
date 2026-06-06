@@ -18,6 +18,11 @@ export type IntroProps = {
   seed?: number
 }
 
+export type WordmarkIntroProps = {
+  body?: string
+  wordmark?: string
+}
+
 const NEUTRAL_PERSONALITIES = new Set(['', 'default', 'none', 'neutral'])
 
 const FALLBACK_COPY: IntroCopy[] = [
@@ -146,6 +151,30 @@ function pickCopy(copies: readonly IntroCopy[], seed = 0): IntroCopy {
 
 const WORDMARK = 'HERMES AGENT'
 
+export function WordmarkIntro({ body, wordmark = WORDMARK }: WordmarkIntroProps) {
+  return (
+    <div
+      className="pointer-events-none flex w-full min-w-0 flex-col items-center justify-center px-3 py-6 text-center text-muted-foreground sm:px-6 lg:px-8"
+      data-slot="aui_intro"
+    >
+      <div className="w-full min-w-0">
+        <p
+          aria-label={wordmark}
+          className="fit-text mx-auto mb-3 w-[88%] font-['Collapse'] font-bold uppercase leading-[0.9] tracking-[0.08em] text-midground mix-blend-plus-lighter dark:text-foreground/90"
+          style={{ '--fit-text-line-height': '0.9', '--fit-text-min': '2.75rem' } as CSSProperties}
+        >
+          <span>
+            <span>{wordmark}</span>
+          </span>
+          <span aria-hidden="true">{wordmark}</span>
+        </p>
+
+        {body ? <p className="m-0 text-center leading-normal tracking-tight">{body}</p> : null}
+      </div>
+    </div>
+  )
+}
+
 function resolveCopy(
   personality: string | undefined,
   seed: number | undefined,
@@ -175,25 +204,5 @@ export function Intro({ personality, seed }: IntroProps) {
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
   const selectedCopy = resolveCopy(personality, mountSeed + (seed ?? 0), language, copy)
 
-  return (
-    <div
-      className="pointer-events-none flex w-full min-w-0 flex-col items-center justify-center px-3 py-6 text-center text-muted-foreground sm:px-6 lg:px-8"
-      data-slot="aui_intro"
-    >
-      <div className="w-full min-w-0">
-        <p
-          aria-label={WORDMARK}
-          className="fit-text mx-auto mb-3 w-[88%] font-['Collapse'] font-bold uppercase leading-[0.9] tracking-[0.08em] text-midground mix-blend-plus-lighter dark:text-foreground/90"
-          style={{ '--fit-text-line-height': '0.9', '--fit-text-min': '2.75rem' } as CSSProperties}
-        >
-          <span>
-            <span>{WORDMARK}</span>
-          </span>
-          <span aria-hidden="true">{WORDMARK}</span>
-        </p>
-
-        <p className="m-0 text-center leading-normal tracking-tight">{selectedCopy.body}</p>
-      </div>
-    </div>
-  )
+  return <WordmarkIntro body={selectedCopy.body} />
 }

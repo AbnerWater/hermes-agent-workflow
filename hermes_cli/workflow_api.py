@@ -50,6 +50,7 @@ RunStatus = Literal["idle", "running", "paused", "waiting_user_confirm", "comple
 ProjectStatus = Literal["draft", "clarifying", "generated", "failed"]
 ExecutionMode = Literal["single_step", "semi_auto", "auto"]
 SkillMode = Literal["auto", "manual"]
+WorkflowIntakePhase = Literal["idle", "clarifying", "draft_ready", "generating", "error"]
 StreamEventType = Literal[
     "process_summary",
     "tool_call",
@@ -400,6 +401,7 @@ class WorkflowAgentRunner:
         model_override: Optional[str] = None,
         message_label: str = "AI 回复",
         persist_final: bool = True,
+        persist_runtime: bool = True,
     ) -> WorkflowAgentResult:
         started_at = time.time()
         deltas: List[str] = []
@@ -451,6 +453,7 @@ class WorkflowAgentRunner:
                     details={"toolCallId": tool_call_id, "name": name, "args": _safe_details(args)},
                     status="info",
                 ),
+                persist=persist_runtime,
             )
 
         def tool_complete(tool_call_id: str, name: str, args: Dict[str, Any], result: Any) -> None:
@@ -468,6 +471,7 @@ class WorkflowAgentRunner:
                     status="success",
                     durationMs=int((time.time() - started_at) * 1000),
                 ),
+                persist=persist_runtime,
             )
 
         def tool_progress(event_type: str, name: Optional[str] = None, preview: Optional[str] = None, args: Optional[Dict[str, Any]] = None, **kwargs: Any) -> None:
@@ -486,6 +490,7 @@ class WorkflowAgentRunner:
                     details={"eventType": event_type, "args": _safe_details(args or {}), **_safe_details(kwargs)},
                     status="info",
                 ),
+                persist=persist_runtime,
             )
 
         agent = self._make_agent(
@@ -498,16 +503,17 @@ class WorkflowAgentRunner:
             tool_complete_callback=tool_complete,
             tool_progress_callback=tool_progress,
         )
-        history = _load_workflow_agent_history(project, session_id)
-        _append_workflow_agent_message(
-            project,
-            session_id=session_id,
-            role="user",
-            content=prompt,
-            node=node,
-            run=run,
-            metadata={"label": message_label},
-        )
+        history = _load_workflow_agent_history(project, session_id) if persist_runtime else []
+        if persist_runtime:
+            _append_workflow_agent_message(
+                project,
+                session_id=session_id,
+                role="user",
+                content=prompt,
+                node=node,
+                run=run,
+                metadata={"label": message_label},
+            )
         tokens = _set_workflow_session_context(session_id, project.root)
         try:
             result = agent.run_conversation(
@@ -534,7 +540,7 @@ class WorkflowAgentRunner:
         else:
             parsed = WorkflowAgentResult(text=_strip_reasoning(str(result)), session_id=session_id)
 
-        if parsed.text:
+        if parsed.text and persist_runtime:
             _append_workflow_agent_message(
                 project,
                 session_id=session_id,
@@ -566,6 +572,7 @@ class WorkflowAgentRunner:
                     status="error" if parsed.status == "error" else "success",
                     durationMs=int((time.time() - started_at) * 1000),
                 ),
+                persist=persist_runtime,
             )
 
         return parsed
@@ -658,16 +665,21 @@ def create_workflow_router(ws_auth_ok: Callable[[WebSocket], bool]) -> APIRouter
     @router.post("/intake/{intake_id}/confirm")
     async def confirm_intake(intake_id: str, body: WorkflowIntakeConfirmRequest) -> ProjectBundle:
         try:
-            project, state = _intake_project_and_state(intake_id, body.projectId)
-            summary = body.summary.strip() or str(state.get("summary") or "")
-            _finalize_intake_project(project, state, body, summary)
+            state = _intake_state_for(intake_id)
+            if state.get("projectId"):
+                project, legacy_state = _intake_project_and_state(intake_id, body.projectId or str(state.get("projectId")))
+                summary = body.summary.strip() or str(legacy_state.get("summary") or "")
+                _finalize_intake_project(project, legacy_state, body, summary)
+                error = _generate_workflow_for_project(project, reason="workflow_generate")
+                return _project_bundle(project.id, error=error)
+            return _confirm_intake_draft(intake_id, state, body)
         except HTTPException as exc:
             if exc.status_code != 404 or body.projectId:
                 raise
             summary = body.summary.strip() or _intake_summary_for(intake_id)
             project = _create_legacy_intake_project(body, intake_id, summary)
-        error = _generate_workflow_for_project(project, reason="workflow_generate")
-        return _project_bundle(project.id, error=error)
+            error = _generate_workflow_for_project(project, reason="workflow_generate")
+            return _project_bundle(project.id, error=error)
 
     @router.post("/projects")
     async def create_project(body: ProjectCreateRequest) -> ProjectBundle:
@@ -1474,56 +1486,58 @@ def _execute_node(project: WorkflowProject, workflow: Workflow, run: ExecutionRu
 
 
 def _start_intake_session(body: WorkflowIntakeStartRequest) -> Dict[str, Any]:
-    project = _create_project(ProjectCreateRequest(name=body.name, goal=body.goal, root=body.root, references=body.references))
-    project.status = "clarifying"
-    _touch_project(project)
-    _append_event(
-        project.id,
-        StreamEvent(
-            id=_new_id("evt"),
-            projectId=project.id,
-            type="process_summary",
-            label="Intake started",
-            summary="Workflow project created as a clarification draft.",
-            details={"intake": True, "references": len(body.references), "rawReasoningExposed": False},
-            status="success",
-        ),
-    )
-    _create_snapshot(project, "Project initialized", "project_init")
+    name = body.name.strip()
+    goal = body.goal.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="Project name is required")
+    if not goal:
+        raise HTTPException(status_code=422, detail="Task description is required")
     intake_id = _new_id("intake")
     state = {
         "id": intake_id,
-        "projectId": project.id,
-        "name": project.name,
-        "goal": body.goal,
-        "root": project.root,
+        "projectId": None,
+        "name": name,
+        "goal": goal,
+        "root": body.root or "",
         "references": list(body.references),
         "turns": 0,
         "summary": "",
         "ready": False,
+        "phase": "clarifying",
         "currentBatch": None,
         "batches": [],
         "answeredCount": 0,
+        "draftMarkdown": "",
+        "draftWorkflow": None,
         "messages": [],
     }
-    _remember_intake_state(project, state)
-    return _advance_intake_with_agent(project, state, trigger="start")
+    _append_intake_message(state, "user", goal)
+    _remember_intake_state(None, state)
+    return _advance_intake_with_agent(_intake_transient_project(state), state, trigger="start")
 
 
 def _message_intake_session(intake_id: str, message: str) -> Dict[str, Any]:
     text = _strip_reasoning(message)
     if not text:
         raise HTTPException(status_code=422, detail="Intake message is required")
-    project, state = _intake_project_and_state(intake_id)
+    state = _intake_state_for(intake_id)
+    project = _intake_transient_project(state)
+    if state.get("projectId"):
+        project = _load_project(str(state["projectId"]))
     _append_intake_message(state, "user", text)
-    _remember_intake_state(project, state)
+    state["phase"] = "clarifying"
+    state["ready"] = False
+    _remember_intake_state(project if state.get("projectId") else None, state)
     return _advance_intake_with_agent(project, state, trigger="message", user_message=text)
 
 
 def _answer_intake_session(intake_id: str, answers: List[WorkflowIntakeAnswer]) -> Dict[str, Any]:
     if not answers:
         raise HTTPException(status_code=422, detail="At least one intake answer is required")
-    project, state = _intake_project_and_state(intake_id)
+    state = _intake_state_for(intake_id)
+    project = _intake_transient_project(state)
+    if state.get("projectId"):
+        project = _load_project(str(state["projectId"]))
     current_batch = state.get("currentBatch") if isinstance(state.get("currentBatch"), dict) else None
     questions = current_batch.get("questions", []) if current_batch else []
     expected_ids = {str(question.get("id") or "") for question in questions if question.get("id")}
@@ -1538,18 +1552,27 @@ def _answer_intake_session(intake_id: str, answers: List[WorkflowIntakeAnswer]) 
     state["answeredCount"] = int(state.get("answeredCount") or 0) + len(answers)
     answer_summary = _format_intake_answers_for_user(questions, answers)
     _append_intake_message(state, "user", answer_summary)
-    _remember_intake_state(project, state)
+    state["phase"] = "clarifying"
+    state["ready"] = False
+    _remember_intake_state(project if state.get("projectId") else None, state)
     return _advance_intake_with_agent(project, state, trigger="answers", answers=answer_payload)
 
 
 def _intake_response(state: Dict[str, Any]) -> Dict[str, Any]:
+    phase = str(state.get("phase") or "clarifying")
+    draft_workflow = state.get("draftWorkflow") if isinstance(state.get("draftWorkflow"), dict) else None
+    can_confirm = phase == "draft_ready" and draft_workflow is not None
     return {
         "ok": True,
         "intakeId": state["id"],
         "projectId": state.get("projectId"),
         "messages": state.get("messages", []),
-        "ready": bool(state.get("ready")),
-        "summary": state.get("summary") or _build_intake_summary(state),
+        "ready": can_confirm,
+        "summary": state.get("summary") or state.get("draftMarkdown") or _build_intake_summary(state),
+        "phase": phase,
+        "draftMarkdown": state.get("draftMarkdown") or "",
+        "draftWorkflow": draft_workflow,
+        "canConfirm": can_confirm,
         "currentBatch": state.get("currentBatch"),
         "answeredCount": int(state.get("answeredCount") or 0),
         "error": state.get("error") or None,
@@ -1558,10 +1581,10 @@ def _intake_response(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def _workflow_intake_system_prompt() -> str:
     return (
-        "You are Hermes Workflow Intake, a planning clarifier for an AI-agent workflow workbench. "
-        "Analyze the user's objective, references, inputs, deliverables, acceptance criteria, risks, "
-        "preferred models/skills/tools, and human confirmation needs. Ask only clarification questions "
-        "that materially improve workflow planning. Return only JSON. Never expose hidden reasoning or chain-of-thought."
+        "You are Hermes Workflow Intake, a planning assistant for an AI-agent workflow workbench. "
+        "Use concise conversational clarification when key project details are missing. "
+        "When the plan is clear enough, produce a user-readable Markdown workflow draft and a strict JSON workflow graph. "
+        "Return only JSON. Never expose hidden reasoning or chain-of-thought."
     )
 
 
@@ -1573,62 +1596,142 @@ def _workflow_intake_prompt(
     user_message: Optional[str] = None,
     answers: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
-    references = [ref.model_dump() for ref in _load_references(project) if ref.enabled]
+    references = [_reference_from_path(path).model_dump() for path in state.get("references", []) if str(path).strip()]
     transcript = [
         {"role": item.get("role"), "content": _truncate_text(str(item.get("content") or ""), 1600)}
         for item in state.get("messages", [])[-12:]
         if item.get("content")
     ]
     schema = {
-        "reply": "assistant message shown above the interactive questions",
-        "ready": False,
-        "summary": "planning summary when ready, otherwise best current summary",
+        "reply": "Markdown assistant message. Ask concise clarification questions or explain the draft.",
+        "phase": "clarifying",
+        "draftMarkdown": "",
         "questions": [
             {
                 "id": "stable-question-id",
-                "question": "one decision the user must clarify",
-                "detail": "why this matters",
+                "question": "One concise clarification question",
+                "detail": "Why this answer changes the workflow plan",
                 "options": [
-                    {"id": "a", "label": "recommended option", "description": "tradeoff", "priority": 1},
-                    {"id": "b", "label": "second option", "description": "tradeoff", "priority": 2},
-                    {"id": "c", "label": "third option", "description": "tradeoff", "priority": 3},
+                    {
+                        "id": "recommended-option-id",
+                        "label": "Recommended short answer",
+                        "description": "What this choice means for the workflow",
+                        "priority": 1,
+                    },
+                    {
+                        "id": "second-option-id",
+                        "label": "Second short answer",
+                        "description": "What this choice means for the workflow",
+                        "priority": 2,
+                    },
+                    {
+                        "id": "third-option-id",
+                        "label": "Third short answer",
+                        "description": "What this choice means for the workflow",
+                        "priority": 3,
+                    },
                 ],
+            }
+        ],
+        "workflow": None,
+    }
+    workflow_schema = {
+        "title": "string",
+        "nodes": [
+            {
+                "id": "stable-lowercase-id",
+                "type": "planning|reference|execution|review|test|delivery|task",
+                "title": "short title",
+                "description": "what the node must accomplish",
+                "skills": ["optional skill names"],
+                "optional": False,
+                "reviewRules": {"required": False, "checklist": ["observable acceptance item"]},
+                "position": {"x": 0, "y": 0},
+            }
+        ],
+        "edges": [
+            {
+                "id": "edge-source-target",
+                "source": "source-node-id",
+                "target": "target-node-id",
+                "type": "dependency|feedback",
+                "sourceHandle": "success|failure",
+                "targetHandle": "input",
+                "label": "short label",
+                "optional": False,
             }
         ],
     }
     return "\n".join(
         [
-            "Create the next clarification batch for this Hermes Workflow project.",
-            "Each question must include exactly three options ranked by priority. The user can still type a custom answer.",
-            "If enough information is available, return ready=true, an empty questions array, and a concrete planning summary.",
-            "If more information is needed, return ready=false and one or more questions.",
+            "Continue the conversational planning intake for this Hermes Workflow project.",
+            "If critical information is missing, set phase='clarifying', workflow=null, and return targeted questions in questions[].",
+            "Each clarification question must have exactly three options sorted by recommendation priority. The UI will add a custom answer field.",
+            "Use reply only as a short introduction to the batch. Do not duplicate the full question and option list in reply.",
+            "If enough information is available, set phase='draft_ready', include draftMarkdown, and include workflow.",
+            "If the user asks for changes to a previous draft, revise the draft and return phase='draft_ready' again.",
+            "Do not use fixed question templates. Only ask questions that materially change the workflow plan.",
+            "",
+            "Workflow graph rules:",
+            "Ordinary task nodes (task/planning/reference/execution/delivery) have one input and one success output.",
+            "Review/test decision nodes (review/test/testing) have one input and success/failure outputs.",
+            "Each output port can connect to at most one target input. One target input can have multiple upstream outputs.",
+            "Ordinary task nodes must not use failure output edges. Use review/test nodes for quality gates, tests, and branch decisions.",
+            "Use sourceHandle='success' for pass/continue and sourceHandle='failure' only from review/test nodes for failed review or revision loops.",
             "",
             f"Trigger: {trigger}",
-            f"Project name: {project.name}",
-            f"Project root: {project.root}",
-            f"Initial goal:\n{project.goal or state.get('goal') or 'No goal provided.'}",
+            f"Project name: {state.get('name') or project.name}",
+            f"Requested project root: {state.get('root') or 'Use Hermes default workflows directory'}",
+            f"Initial task description:\n{state.get('goal') or project.goal or 'No task description provided.'}",
             f"Enabled references JSON:\n{json.dumps(references, ensure_ascii=False, indent=2)}",
             f"Prior transcript JSON:\n{json.dumps(transcript, ensure_ascii=False, indent=2)}",
             f"Latest freeform user message:\n{user_message or ''}",
             f"Latest structured answers JSON:\n{json.dumps(answers or [], ensure_ascii=False, indent=2)}",
-            f"Current summary:\n{state.get('summary') or ''}",
+            f"Previous draft markdown:\n{state.get('draftMarkdown') or ''}",
+            f"Previous draft workflow JSON:\n{json.dumps(state.get('draftWorkflow') or None, ensure_ascii=False, indent=2)}",
             "",
             "Return JSON matching this exact shape:",
             json.dumps(schema, ensure_ascii=False, indent=2),
+            "",
+            "When phase='draft_ready', workflow must match this shape:",
+            json.dumps(workflow_schema, ensure_ascii=False, indent=2),
         ]
     )
 
 
-def _remember_intake_state(project: WorkflowProject, state: Dict[str, Any]) -> None:
-    state["projectId"] = project.id
+def _remember_intake_state(project: Optional[WorkflowProject], state: Dict[str, Any]) -> None:
+    if project is not None:
+        state["projectId"] = project.id
     state["updatedAt"] = time.time()
     with _intake_sessions_lock:
         _intake_sessions[str(state["id"])] = state
-    _write_json(_intake_state_path(project), state)
+    if project is not None:
+        _write_json(_intake_state_path(project), state)
+    _write_json(_intake_state_path_by_id(str(state["id"])), state)
 
 
 def _intake_state_path(project: WorkflowProject) -> Path:
     return _meta_path(project, "intake.state.json")
+
+
+def _intake_state_root() -> Path:
+    return Path(get_hermes_home()) / "workflow-intakes"
+
+
+def _intake_state_path_by_id(intake_id: str) -> Path:
+    return _intake_state_root() / _slug(intake_id) / "intake.state.json"
+
+
+def _intake_transient_project(state: Dict[str, Any]) -> WorkflowProject:
+    intake_id = str(state.get("id") or _new_id("intake"))
+    root = _intake_state_root() / _slug(intake_id)
+    return WorkflowProject(
+        id=f"intake-{intake_id}",
+        name=str(state.get("name") or "Workflow Intake"),
+        root=str(root),
+        goal=str(state.get("goal") or ""),
+        status="clarifying",
+    )
 
 
 def _read_intake_state(project: WorkflowProject) -> Optional[Dict[str, Any]]:
@@ -1640,6 +1743,34 @@ def _read_intake_state(project: WorkflowProject) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
     return data if isinstance(data, dict) else None
+
+
+def _intake_state_for(intake_id: str) -> Dict[str, Any]:
+    with _intake_sessions_lock:
+        cached = _intake_sessions.get(intake_id)
+    if cached:
+        return cached
+
+    path = _intake_state_path_by_id(intake_id)
+    if path.exists():
+        data = _read_json(path)
+        if isinstance(data, dict) and str(data.get("id") or "") == intake_id:
+            with _intake_sessions_lock:
+                _intake_sessions[intake_id] = data
+            return data
+
+    for root in _read_registry().values():
+        project = _load_project_by_path(Path(root))
+        if project is None:
+            continue
+        state = _read_intake_state(project)
+        if state and str(state.get("id") or "") == intake_id:
+            state["projectId"] = project.id
+            with _intake_sessions_lock:
+                _intake_sessions[intake_id] = state
+            return state
+
+    raise HTTPException(status_code=404, detail="Workflow intake state not found")
 
 
 def _intake_project_and_state(intake_id: str, project_id: Optional[str] = None) -> tuple[WorkflowProject, Dict[str, Any]]:
@@ -1693,6 +1824,7 @@ def _advance_intake_with_agent(
 ) -> Dict[str, Any]:
     state["error"] = None
     prompt = _workflow_intake_prompt(project, state, trigger=trigger, user_message=user_message, answers=answers)
+    persist_runtime = bool(state.get("projectId"))
     try:
         result = _agent_runner.run(
             project=project,
@@ -1702,6 +1834,7 @@ def _advance_intake_with_agent(
             max_iterations=8,
             message_label="Workflow clarification",
             persist_final=False,
+            persist_runtime=persist_runtime,
         )
         output = _intake_output_from_agent_text(project, state, result.text)
     except Exception as first_error:
@@ -1715,81 +1848,87 @@ def _advance_intake_with_agent(
                 max_iterations=4,
                 message_label="Workflow clarification repair",
                 persist_final=False,
+                persist_runtime=persist_runtime,
             )
             output = _intake_output_from_agent_text(project, state, repaired.text)
         except Exception as repair_error:
             message = _truncate_text(str(repair_error), 1000)
             state["error"] = message
+            state["phase"] = "error"
             _append_intake_message(
                 state,
                 "assistant",
-                "Workflow clarification could not parse the model response. Add more planning details or retry clarification.",
+                "Workflow planning could not parse the model response. Add more planning details or retry.",
             )
+            if persist_runtime:
+                _append_event(
+                    project.id,
+                    StreamEvent(
+                        id=_new_id("evt"),
+                        projectId=project.id,
+                        type="error",
+                        label="Workflow clarification failed",
+                        summary=message,
+                        details={"stage": "intake", "rawReasoningExposed": False},
+                        status="error",
+                    ),
+                )
+            _remember_intake_state(project if persist_runtime else None, state)
+            return _intake_response(state)
+
+    phase = str(output.get("phase") or "clarifying")
+    reply = str(output.get("reply") or "").strip()
+    draft_markdown = str(output.get("draftMarkdown") or "").strip()
+    questions = output.get("questions") if isinstance(output.get("questions"), list) else []
+    assistant_text = draft_markdown if phase == "draft_ready" and draft_markdown else reply
+    if assistant_text:
+        _append_intake_message(state, "assistant", assistant_text)
+        if persist_runtime:
             _append_event(
                 project.id,
                 StreamEvent(
                     id=_new_id("evt"),
                     projectId=project.id,
-                    type="error",
-                    label="Workflow clarification failed",
-                    summary=message,
-                    details={"stage": "intake", "rawReasoningExposed": False},
-                    status="error",
+                    type="ai_reply",
+                    label="Workflow planning",
+                    summary=_truncate_text(assistant_text, 1800),
+                    details={"text": assistant_text, "final": True, "rawReasoningExposed": False},
+                    status="success",
                 ),
             )
-            _remember_intake_state(project, state)
-            return _intake_response(state)
 
-    reply = output.get("reply", "")
-    if reply:
-        _append_intake_message(state, "assistant", reply)
-        _append_event(
-            project.id,
-            StreamEvent(
-                id=_new_id("evt"),
-                projectId=project.id,
-                type="ai_reply",
-                label="Workflow clarification",
-                summary=_truncate_text(reply, 1800),
-                details={"text": reply, "final": True, "rawReasoningExposed": False},
-                status="success",
-            ),
-        )
+    if draft_markdown:
+        state["draftMarkdown"] = draft_markdown
+        state["summary"] = draft_markdown
+    draft_workflow = output.get("draftWorkflow")
+    if isinstance(draft_workflow, dict):
+        state["draftWorkflow"] = draft_workflow
 
-    summary = str(output.get("summary") or "").strip()
-    if summary:
-        state["summary"] = _strip_reasoning(summary)
-
-    batch = output.get("batch")
-    if batch:
-        state["currentBatch"] = batch
-        state["ready"] = False
+    state["phase"] = phase
+    if phase == "draft_ready":
+        state["currentBatch"] = None
+    elif questions:
+        state["currentBatch"] = {
+            "id": _new_id("batch"),
+            "questions": questions,
+            "createdAt": time.time(),
+        }
     else:
         state["currentBatch"] = None
-        state["ready"] = bool(output.get("ready"))
+    state["ready"] = phase == "draft_ready" and isinstance(state.get("draftWorkflow"), dict)
 
     state["turns"] = int(state.get("turns") or 0) + 1
-    _remember_intake_state(project, state)
+    _remember_intake_state(project if persist_runtime else None, state)
     return _intake_response(state)
 
 
 def _workflow_intake_repair_prompt(project: WorkflowProject, state: Dict[str, Any], error: str) -> str:
     schema = {
-        "reply": "assistant message shown above the interactive questions",
-        "ready": False,
-        "summary": "current or final planning summary",
-        "questions": [
-            {
-                "id": "stable-question-id",
-                "question": "one decision the user must clarify",
-                "detail": "why this matters",
-                "options": [
-                    {"id": "a", "label": "recommended option", "description": "tradeoff", "priority": 1},
-                    {"id": "b", "label": "second option", "description": "tradeoff", "priority": 2},
-                    {"id": "c", "label": "third option", "description": "tradeoff", "priority": 3},
-                ],
-            }
-        ],
+        "reply": "Markdown assistant message",
+        "phase": "clarifying",
+        "draftMarkdown": "",
+        "questions": [],
+        "workflow": None,
     }
     return "\n".join(
         [
@@ -1797,7 +1936,7 @@ def _workflow_intake_repair_prompt(project: WorkflowProject, state: Dict[str, An
             f"Project: {project.name}",
             f"Goal:\n{project.goal or state.get('goal') or ''}",
             f"Parse error:\n{error}",
-            "Use this exact schema and ensure every question has exactly three options:",
+            "Use this exact schema. Set phase='draft_ready' only when workflow is a valid workflow graph:",
             json.dumps(schema, ensure_ascii=False, indent=2),
         ]
     )
@@ -1806,70 +1945,94 @@ def _workflow_intake_repair_prompt(project: WorkflowProject, state: Dict[str, An
 def _intake_output_from_agent_text(project: WorkflowProject, state: Dict[str, Any], text: str) -> Dict[str, Any]:
     data = _extract_json_object(text)
     reply = _strip_reasoning(str(data.get("reply") or "")).strip()
-    summary = _strip_reasoning(str(data.get("summary") or "")).strip()
-    questions_raw = data.get("questions")
-    if questions_raw is None:
-        questions_raw = []
-    if not isinstance(questions_raw, list):
-        raise ValueError("Workflow intake JSON field 'questions' must be a list")
+    phase = str(data.get("phase") or "").strip().lower()
+    draft_markdown = _strip_reasoning(str(data.get("draftMarkdown") or data.get("summary") or "")).strip()
+    workflow_raw = data.get("workflow") or data.get("draftWorkflow")
+    draft_workflow: Optional[Dict[str, Any]] = None
+    questions = _normalize_intake_questions(data.get("questions"))
+
+    if isinstance(workflow_raw, dict):
+        workflow = _workflow_from_agent_text(project, json.dumps({"workflow": workflow_raw}, ensure_ascii=False))
+        _validate_workflow(workflow)
+        draft_workflow = workflow.model_dump()
+        phase = "draft_ready"
+        if not draft_markdown:
+            draft_markdown = reply or _workflow_draft_markdown(workflow)
+    elif phase == "draft_ready":
+        raise ValueError("Workflow intake phase is draft_ready but workflow is missing")
+    else:
+        phase = "clarifying"
+
+    if phase == "clarifying" and not reply:
+        reply = "Please provide any missing planning details so Hermes can draft the workflow."
+
+    return {
+        "reply": reply,
+        "phase": phase,
+        "draftMarkdown": draft_markdown,
+        "draftWorkflow": draft_workflow,
+        "questions": questions if phase == "clarifying" else [],
+    }
+
+
+def _normalize_intake_questions(raw_questions: Any) -> List[Dict[str, Any]]:
+    if raw_questions in (None, ""):
+        return []
+    if not isinstance(raw_questions, list):
+        raise ValueError("Workflow intake questions must be a list")
 
     questions: List[Dict[str, Any]] = []
-    used_ids: set[str] = set()
-    for index, raw_question in enumerate(questions_raw):
+    for question_index, raw_question in enumerate(raw_questions, start=1):
         if not isinstance(raw_question, dict):
             raise ValueError("Workflow intake question must be an object")
-        question_text = _strip_reasoning(str(raw_question.get("question") or "")).strip()
+
+        question_text = _strip_reasoning(str(raw_question.get("question") or raw_question.get("label") or "")).strip()
         if not question_text:
-            raise ValueError("Workflow intake question is missing text")
-        question_id = _unique_id(_slug(str(raw_question.get("id") or question_text)) or f"question-{index + 1}", used_ids)
-        used_ids.add(question_id)
-        options_raw = raw_question.get("options")
-        if not isinstance(options_raw, list) or len(options_raw) != 3:
+            raise ValueError("Workflow intake question text is required")
+
+        raw_options = raw_question.get("options")
+        if not isinstance(raw_options, list) or len(raw_options) != 3:
             raise ValueError("Each workflow intake question must include exactly three options")
+
         options: List[Dict[str, Any]] = []
-        used_option_ids: set[str] = set()
-        for option_index, raw_option in enumerate(options_raw):
+        for option_index, raw_option in enumerate(raw_options, start=1):
             if not isinstance(raw_option, dict):
                 raise ValueError("Workflow intake option must be an object")
-            label = _strip_reasoning(str(raw_option.get("label") or "")).strip()
+
+            label = _strip_reasoning(str(raw_option.get("label") or raw_option.get("title") or "")).strip()
             if not label:
-                raise ValueError("Workflow intake option is missing label")
-            priority_raw = raw_option.get("priority", option_index + 1)
+                raise ValueError("Workflow intake option label is required")
+
             try:
-                priority = int(priority_raw)
-            except Exception:
-                priority = option_index + 1
-            option_id = _unique_id(
-                _slug(str(raw_option.get("id") or label)) or chr(ord("a") + option_index),
-                used_option_ids,
-            )
-            used_option_ids.add(option_id)
+                priority = int(raw_option.get("priority") or option_index)
+            except (TypeError, ValueError):
+                priority = option_index
+
+            option_id = _slug(str(raw_option.get("id") or f"option-{option_index}-{label}")) or f"option-{option_index}"
             options.append(
-                WorkflowIntakeOption(
-                    id=option_id,
-                    label=label,
-                    description=_strip_reasoning(str(raw_option.get("description") or "")).strip(),
-                    priority=priority,
-                ).model_dump()
+                {
+                    "id": option_id,
+                    "label": label,
+                    "description": _strip_reasoning(str(raw_option.get("description") or "")).strip(),
+                    "priority": priority,
+                }
             )
-        options.sort(key=lambda item: int(item.get("priority") or 0))
+
+        options.sort(key=lambda option: int(option.get("priority") or 0))
+        question_id = (
+            _slug(str(raw_question.get("id") or f"question-{question_index}-{question_text}"))
+            or f"question-{question_index}"
+        )
         questions.append(
-            WorkflowIntakeQuestion(
-                id=question_id,
-                question=question_text,
-                detail=_strip_reasoning(str(raw_question.get("detail") or "")).strip(),
-                options=options,
-            ).model_dump()
+            {
+                "id": question_id,
+                "question": question_text,
+                "detail": _strip_reasoning(str(raw_question.get("detail") or "")).strip(),
+                "options": options,
+            }
         )
 
-    batch = None
-    if questions:
-        batch = WorkflowIntakeBatch(id=_new_id("batch"), questions=questions).model_dump()
-
-    ready = bool(data.get("ready")) and not questions
-    if ready and not summary:
-        summary = _build_intake_summary(state)
-    return {"reply": reply, "ready": ready, "summary": summary, "batch": batch}
+    return questions
 
 
 def _format_intake_answers_for_user(questions: List[Dict[str, Any]], answers: List[WorkflowIntakeAnswer]) -> str:
@@ -1886,6 +2049,69 @@ def _format_intake_answers_for_user(questions: List[Dict[str, Any]], answers: Li
         suffix = " (custom)" if answer.custom else ""
         lines.append(f"- {str(question.get('question') or answer.questionId)}: {response}{suffix}")
     return "\n".join(lines)
+
+
+def _workflow_draft_markdown(workflow: Workflow) -> str:
+    lines = [f"# {workflow.title}", "", "## Nodes"]
+    for index, node in enumerate(workflow.nodes, start=1):
+        lines.append(f"{index}. **{node.title}** ({node.type}) - {node.description or 'No description'}")
+    if workflow.edges:
+        lines.extend(["", "## Flow"])
+        title_by_id = {node.id: node.title for node in workflow.nodes}
+        for edge in workflow.edges:
+            outcome = "failure" if _edge_source_handle(edge) == "failure" else "success"
+            lines.append(
+                f"- {title_by_id.get(edge.source, edge.source)} -> {title_by_id.get(edge.target, edge.target)} ({outcome})"
+            )
+    return "\n".join(lines)
+
+
+def _confirm_intake_draft(intake_id: str, state: Dict[str, Any], body: WorkflowIntakeConfirmRequest) -> ProjectBundle:
+    draft_raw = state.get("draftWorkflow")
+    if not isinstance(draft_raw, dict):
+        raise HTTPException(status_code=422, detail="Workflow draft is not ready")
+
+    name = body.name.strip() or str(state.get("name") or "Hermes Workflow Project")
+    goal = body.goal.strip() or str(state.get("goal") or "")
+    draft_markdown = _strip_reasoning(str(state.get("draftMarkdown") or body.summary or "")).strip()
+    goal_parts = [goal, f"Confirmed workflow draft:\n{draft_markdown}" if draft_markdown else ""]
+    references = body.references if body.references else list(state.get("references") or [])
+
+    project = _create_project(
+        ProjectCreateRequest(
+            name=name,
+            goal="\n\n".join(part for part in goal_parts if part),
+            root=body.root or str(state.get("root") or "") or None,
+            references=[str(path) for path in references if str(path).strip()],
+        )
+    )
+    _register_project(project)
+    workflow = Workflow(**draft_raw)
+    workflow.title = workflow.title or project.name
+    _promote_ready_nodes(workflow)
+    _validate_workflow(workflow)
+    _save_workflow(project, workflow)
+    project.status = "generated"
+    _touch_project(project)
+    _append_event(
+        project.id,
+        StreamEvent(
+            id=_new_id("evt"),
+            projectId=project.id,
+            type="stage_result",
+            label="Workflow initialized",
+            summary="Confirmed draft workflow saved as an executable project.",
+            details={"intakeId": intake_id, "rawReasoningExposed": False},
+            status="success",
+        ),
+    )
+    _create_snapshot(project, "Workflow initialized from draft", "workflow_intake_confirm")
+    state["projectId"] = project.id
+    state["phase"] = "draft_ready"
+    state["ready"] = True
+    state["confirmedAt"] = time.time()
+    _remember_intake_state(project, state)
+    return _project_bundle(project.id)
 
 
 def _finalize_intake_project(
@@ -1971,11 +2197,11 @@ def _build_intake_summary(state: Dict[str, Any]) -> str:
 
 
 def _intake_summary_for(intake_id: str) -> str:
-    with _intake_sessions_lock:
-        state = _intake_sessions.get(intake_id)
-        if not state:
-            return ""
-        return str(state.get("summary") or _build_intake_summary(state))
+    try:
+        state = _intake_state_for(intake_id)
+    except HTTPException:
+        return ""
+    return str(state.get("summary") or _build_intake_summary(state))
 
 
 def _create_project(body: ProjectCreateRequest) -> WorkflowProject:

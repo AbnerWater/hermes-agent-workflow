@@ -25,13 +25,24 @@ import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
+import { Backdrop } from '@/components/Backdrop'
 import { CompactMarkdown } from '@/components/chat/compact-markdown'
+import { WordmarkIntro } from '@/components/chat/intro'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
+import { COMPOSER_ROOT_FRAME_CLASS, ComposerRichInput, ComposerSurface } from '@/app/chat/composer/shared'
 import {
   attachWorkflowComposerFiles,
   completeWorkflowComposer,
@@ -86,8 +97,6 @@ import type {
   WorkflowNodeStatus
 } from '@/types/workflow'
 
-import { titlebarHeaderBaseClass } from '../shell/titlebar'
-
 import { type WorkflowCopy, workflowCopyFor } from './i18n'
 import { applyWorkflowProjectChange, dispatchWorkflowProjectsChanged } from './project-events'
 
@@ -96,6 +105,11 @@ type DrawerMode = 'files' | 'references' | 'skills' | 'snapshots' | 'task'
 interface WorkflowNodeData extends Record<string, unknown> {
   decisionNode: boolean
   node: WorkflowNode
+}
+
+interface WorkflowIntakeReference {
+  kind: 'file' | 'folder'
+  path: string
 }
 
 type FlowNode = Node<WorkflowNodeData, 'workflow'>
@@ -161,6 +175,12 @@ const EVENT_ICON: Record<StreamEvent['type'], string> = {
 }
 
 const STREAM_BOTTOM_THRESHOLD = 48
+const WORKFLOW_NODE_WIDTH = 260
+const WORKFLOW_NODE_HEIGHT = 112
+const WORKFLOW_LAYOUT_COLUMN_GAP = 360
+const WORKFLOW_LAYOUT_ROW_GAP = 170
+const WORKFLOW_LAYOUT_BAND_GAP = 250
+const WORKFLOW_LAYOUT_MAX_COLUMNS = 5
 
 const DEFAULT_SKILLS: SkillBinding[] = [
   { id: 'planner', name: 'planner', enabled: true, source: 'hermes' },
@@ -429,8 +449,9 @@ function WorkflowWorkbench() {
       return
     }
 
-    setFlowNodes(toFlowNodes(workflow))
-    setFlowEdges(toFlowEdges(workflow, copy))
+    const displayWorkflow = workflowWithDisplayLayout(workflow)
+    setFlowNodes(toFlowNodes(displayWorkflow))
+    setFlowEdges(toFlowEdges(displayWorkflow, copy))
   }, [copy, setFlowEdges, setFlowNodes, workflow])
 
   const invalidateProject = useCallback(
@@ -912,18 +933,6 @@ function ExecutionToolbar({
         </Button>
       </div>
     </section>
-  )
-}
-
-function WorkflowPageTitlebar({ icon, subtitle, title }: { icon: string; subtitle: string; title: string }) {
-  return (
-    <header className={cn(titlebarHeaderBaseClass, 'workflow-page-titlebar')}>
-      <Codicon className="workflow-page-titlebar__icon" name={icon} size="0.9375rem" />
-      <div className="workflow-page-titlebar__copy">
-        <h1>{title}</h1>
-        <p>{subtitle}</p>
-      </div>
-    </header>
   )
 }
 
@@ -2314,36 +2323,43 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
   const [name, setName] = useState<string>(copy.workflowProjectDefaultName)
   const [goal, setGoal] = useState('')
   const [root, setRoot] = useState('')
-  const [references, setReferences] = useState<string[]>([])
+  const [references, setReferences] = useState<WorkflowIntakeReference[]>([])
   const [intakeId, setIntakeId] = useState<string | null>(null)
-  const [projectId, setProjectId] = useState<string | null>(null)
   const [messages, setMessages] = useState<WorkflowIntakeMessage[]>([])
-  const [currentBatch, setCurrentBatch] = useState<WorkflowIntakeBatch | null>(null)
-  const [answeredCount, setAnsweredCount] = useState(0)
   const [intakeError, setIntakeError] = useState<string | null>(null)
   const [reply, setReply] = useState('')
-  const [summary, setSummary] = useState('')
-  const [ready, setReady] = useState(false)
+  const [phase, setPhase] = useState<WorkflowIntakeResponse['phase']>('idle')
+  const [draftMarkdown, setDraftMarkdown] = useState('')
+  const [draftWorkflow, setDraftWorkflow] = useState<Workflow | null>(null)
+  const [currentBatch, setCurrentBatch] = useState<WorkflowIntakeBatch | null>(null)
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [previewNodeId, setPreviewNodeId] = useState<string | null>(null)
+  const referencePaths = useMemo(() => references.map(reference => reference.path), [references])
 
   const payload = useMemo<WorkflowIntakePayload>(
-    () => ({ goal, name, references, root: root || undefined }),
-    [goal, name, references, root]
+    () => ({ goal, name, references: referencePaths, root: root || undefined }),
+    [goal, name, referencePaths, root]
   )
 
   const applyIntakeResponse = useCallback((response: WorkflowIntakeResponse) => {
     setIntakeId(response.intakeId)
-    setProjectId(response.projectId ?? null)
     setMessages(response.messages)
-    setCurrentBatch(response.currentBatch ?? null)
-    setAnsweredCount(response.answeredCount ?? 0)
     setIntakeError(response.error ?? null)
-    setReady(response.ready)
-    setSummary(response.summary)
+    setPhase(response.phase ?? (response.canConfirm || response.ready ? 'draft_ready' : 'clarifying'))
+    setDraftMarkdown(response.draftMarkdown ?? response.summary ?? '')
+    setDraftWorkflow(response.draftWorkflow ?? null)
+    setCurrentBatch(response.currentBatch ?? null)
+    if (response.draftWorkflow?.nodes.length) {
+      setPreviewNodeId(response.draftWorkflow.nodes[0].id)
+    }
   }, [])
 
   const startMutation = useMutation({
     mutationFn: () => startWorkflowIntake(payload),
-    onSuccess: applyIntakeResponse
+    onSuccess: data => {
+      setReply('')
+      applyIntakeResponse(data)
+    }
   })
 
   const messageMutation = useMutation({
@@ -2356,114 +2372,95 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
 
   const answersMutation = useMutation({
     mutationFn: (answers: WorkflowIntakeAnswer[]) => submitWorkflowIntakeAnswers(intakeId!, answers),
-    onSuccess: applyIntakeResponse
+    onSuccess: data => {
+      setReply('')
+      applyIntakeResponse(data)
+    }
   })
 
   const confirmMutation = useMutation({
-    mutationFn: () => confirmWorkflowIntake(intakeId!, { ...payload, projectId, summary }),
+    mutationFn: () => confirmWorkflowIntake(intakeId!, payload),
     onSuccess: data => void onComplete(data)
   })
 
-  const busy =
-    startMutation.isPending || messageMutation.isPending || answersMutation.isPending || confirmMutation.isPending
+  const busy = startMutation.isPending || messageMutation.isPending || answersMutation.isPending || confirmMutation.isPending
 
   const error =
-    errorText(startMutation.error || messageMutation.error || answersMutation.error || confirmMutation.error) ||
-    intakeError
+    errorText(startMutation.error || messageMutation.error || answersMutation.error || confirmMutation.error) || intakeError
+  const draftReady = Boolean(draftWorkflow && (phase === 'draft_ready' || draftMarkdown))
+  const activeBatch = Boolean(currentBatch?.questions.length && !draftReady)
+  const draftMessageIndex = useMemo(() => {
+    if (!draftReady) {
+      return -1
+    }
+
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      if (messages[index]?.role === 'assistant') {
+        return index
+      }
+    }
+
+    return -1
+  }, [draftReady, messages])
+
+  const submitPlanningMessage = () => {
+    if (!intakeId) {
+      if (!goal.trim()) {
+        return
+      }
+
+      startMutation.mutate()
+      return
+    }
+
+    if (!reply.trim()) {
+      return
+    }
+
+    messageMutation.mutate(reply)
+  }
+
+  const addReferences = (kind: WorkflowIntakeReference['kind'], paths: string[]) => {
+    if (!paths.length) {
+      return
+    }
+
+    setReferences(current => {
+      const byPath = new Map(current.map(reference => [reference.path, reference]))
+
+      for (const path of paths) {
+        byPath.set(path, { kind, path })
+      }
+
+      return Array.from(byPath.values())
+    })
+  }
+
+  const chooseReferences = (kind: WorkflowIntakeReference['kind']) => {
+    void window.hermesDesktop
+      .selectPaths({
+        directories: kind === 'folder',
+        multiple: true,
+        title: kind === 'folder' ? copy.chooseReferenceFolder : copy.chooseReference
+      })
+      .then(paths => addReferences(kind, paths))
+  }
+
+  const removeReference = (path: string) => {
+    setReferences(current => current.filter(item => item.path !== path))
+  }
+
+  const composerValue = intakeId ? reply : goal
+  const composerPlaceholder = intakeId ? copy.revisionDetailsPlaceholder : copy.taskPlaceholder
+  const canSubmitComposer =
+    !busy && !activeBatch && (intakeId ? Boolean(reply.trim()) : Boolean(goal.trim() && name.trim()))
 
   return (
-    <main className="workflow-intake-page">
-      <WorkflowPageTitlebar icon="graph" subtitle={copy.workflowIntakeSubtitle} title={copy.workflowIntakeTitle} />
-      <section aria-label="Workflow intake" className="workflow-intake-layout">
-        <div className="workflow-intake-config">
-          <div className="workflow-intake-section-heading">
-            <h2>{copy.projectConfig}</h2>
-            <p>{copy.projectConfigHint}</p>
-          </div>
-
-          <label>
-            {copy.projectName}
-            <Input disabled={busy && Boolean(intakeId)} onChange={event => setName(event.target.value)} value={name} />
-          </label>
-
-          <label>
-            {copy.projectDirectory}
-            <div className="workflow-path-picker">
-              <Input
-                disabled={busy && Boolean(intakeId)}
-                onChange={event => setRoot(event.target.value)}
-                placeholder={copy.projectDirectoryPlaceholder}
-                value={root}
-              />
-              <Button
-                disabled={busy && Boolean(intakeId)}
-                onClick={() => {
-                  void window.hermesDesktop
-                    .selectPaths({ directories: true, title: copy.chooseWorkflowProjectDirectory })
-                    .then(paths => paths[0] && setRoot(paths[0]))
-                }}
-                type="button"
-                variant="outline"
-              >
-                {copy.open}
-              </Button>
-            </div>
-          </label>
-
-          <label>
-            {copy.projectBackground}
-            <Textarea
-              className="min-h-32"
-              disabled={busy && Boolean(intakeId)}
-              onChange={event => setGoal(event.target.value)}
-              placeholder={copy.taskPlaceholder}
-              value={goal}
-            />
-          </label>
-
-          <div>
-            <div className="workflow-dialog-row">
-              <span>{copy.references}</span>
-              <Button
-                disabled={busy && Boolean(intakeId)}
-                onClick={() => {
-                  void window.hermesDesktop
-                    .selectPaths({ multiple: true, title: copy.chooseReference })
-                    .then(paths => setReferences(current => [...new Set([...current, ...paths])]))
-                }}
-                size="xs"
-                type="button"
-                variant="outline"
-              >
-                <Codicon name="add" size="0.8125rem" />
-                {copy.add}
-              </Button>
-            </div>
-            <div className="workflow-reference-preview">
-              {references.length ? (
-                references.map(path => <span key={path}>{path}</span>)
-              ) : (
-                <span>{copy.noReference}</span>
-              )}
-            </div>
-          </div>
-
-          <Button
-            disabled={busy || !name.trim() || Boolean(intakeId)}
-            onClick={() => startMutation.mutate()}
-            type="button"
-          >
-            <Codicon
-              name={startMutation.isPending ? 'loading' : 'comment-discussion'}
-              size="0.875rem"
-              spinning={startMutation.isPending}
-            />
-            {copy.startClarification}
-          </Button>
-        </div>
-
-        <div className="workflow-intake-chat">
-          <div className="workflow-intake-transcript">
+    <main className="workflow-intake-page workflow-intake-page--simple">
+      <Backdrop />
+      <section aria-label="Workflow intake" className="workflow-intake-simple">
+        <div className="workflow-intake-chat workflow-intake-chat--simple">
+          <div className={cn('workflow-intake-transcript', !messages.length && !busy && 'is-empty')}>
             {messages.length ? (
               messages.map((message, index) => (
                 <div
@@ -2472,196 +2469,334 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
                 >
                   <span>{message.role === 'user' ? copy.you : 'Hermes'}</span>
                   <CompactMarkdown className="workflow-intake-message-markdown" text={message.content || '...'} />
+                  {index === draftMessageIndex && draftWorkflow && (
+                    <Button
+                      className="workflow-intake-message__preview"
+                      onClick={() => setPreviewOpen(true)}
+                      size="xs"
+                      type="button"
+                      variant="outline"
+                    >
+                      <Codicon name="preview" size="0.75rem" />
+                      {copy.previewWorkflowDraft}
+                    </Button>
+                  )}
                 </div>
               ))
             ) : (
-              <div className="workflow-muted">{copy.projectConfigHint}</div>
+              <div className="workflow-intake-empty">
+                <WordmarkIntro body={copy.workflowIntakeSubtitle} wordmark="HERMES WORKFLOW" />
+              </div>
+            )}
+            {currentBatch?.questions.length ? (
+              <WorkflowClarificationPanel
+                batch={currentBatch}
+                busy={busy}
+                onSubmit={answers => answersMutation.mutate(answers)}
+              />
+            ) : null}
+            {busy && (
+              <div className="workflow-intake-message">
+                <span>Hermes</span>
+                <div className="workflow-intake-message-markdown">
+                  <Codicon name="loading" size="0.8125rem" spinning />
+                  {confirmMutation.isPending ? copy.initializingWorkflow : copy.planningWithHermes}
+                </div>
+              </div>
             )}
           </div>
 
-          {currentBatch && (
-            <WorkflowClarificationBatchCard
-              batch={currentBatch}
-              disabled={busy}
-              onSubmit={answers => answersMutation.mutate(answers)}
-              submitting={answersMutation.isPending}
-            />
-          )}
+          {error && <div className="workflow-error workflow-intake-error">{error}</div>}
 
-          <form
-            className="workflow-intake-reply"
-            onSubmit={event => {
-              event.preventDefault()
+          <div className="workflow-intake-bottom">
+            <div className={cn(COMPOSER_ROOT_FRAME_CLASS, 'workflow-intake-config-frame')}>
+              <ComposerSurface>
+                <div aria-label={copy.projectConfig} className="workflow-intake-config workflow-intake-config--simple">
+                  <label className="workflow-intake-field">
+                    {copy.projectName}
+                    <Input
+                      className="workflow-intake-control"
+                      disabled={busy && Boolean(intakeId)}
+                      onChange={event => setName(event.target.value)}
+                      value={name}
+                    />
+                  </label>
 
-              if (!intakeId || !reply.trim()) {
-                return
-              }
-
-              messageMutation.mutate(reply)
-            }}
-          >
-            <Textarea
-              disabled={!intakeId || busy}
-              onChange={event => setReply(event.target.value)}
-              onKeyDown={event => {
-                if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
-                  event.currentTarget.form?.requestSubmit()
-                }
-              }}
-              placeholder={copy.planDetailsPlaceholder}
-              value={reply}
-            />
-            <Button disabled={!intakeId || busy || !reply.trim()} size="icon-sm" type="submit">
-              <Codicon
-                name={messageMutation.isPending ? 'loading' : 'send'}
-                size="0.875rem"
-                spinning={messageMutation.isPending}
-              />
-            </Button>
-          </form>
-        </div>
-
-        <aside className="workflow-intake-summary">
-          <div className="workflow-drawer-header">
-            <div>
-              <h2>{copy.summaryTitle}</h2>
-              <p>{ready ? copy.intakeReady : currentBatch ? copy.intakeClarifying : copy.intakeWaiting}</p>
+                  <label className="workflow-intake-field">
+                    {copy.projectDirectory}
+                    <div className="workflow-path-picker workflow-path-picker--intake">
+                      <Input
+                        className="workflow-intake-control"
+                        disabled={busy && Boolean(intakeId)}
+                        onChange={event => setRoot(event.target.value)}
+                        placeholder={copy.projectDirectoryPlaceholder}
+                        value={root}
+                      />
+                      <Button
+                        className="workflow-intake-submit workflow-intake-open-button"
+                        disabled={busy && Boolean(intakeId)}
+                        onClick={() => {
+                          void window.hermesDesktop
+                            .selectPaths({ directories: true, title: copy.chooseWorkflowProjectDirectory })
+                            .then(paths => paths[0] && setRoot(paths[0]))
+                        }}
+                        type="button"
+                      >
+                        {copy.open}
+                      </Button>
+                    </div>
+                  </label>
+                </div>
+              </ComposerSurface>
             </div>
+
+            <form
+              className={cn(COMPOSER_ROOT_FRAME_CLASS, 'workflow-intake-composer')}
+              onSubmit={event => {
+                event.preventDefault()
+                submitPlanningMessage()
+              }}
+            >
+              <ComposerSurface>
+                {references.length > 0 && (
+                  <div className="workflow-intake-reference-tags" aria-label={copy.projectReferences}>
+                    {references.map(reference => (
+                      <span key={reference.path} title={reference.path}>
+                        <Codicon name={reference.kind === 'folder' ? 'folder' : 'file'} size="0.75rem" />
+                        <span>{fileName(reference.path)}</span>
+                        <button
+                          aria-label={copy.removeReference}
+                          disabled={busy && Boolean(intakeId)}
+                          onClick={() => removeReference(reference.path)}
+                          type="button"
+                        >
+                          <Codicon name="close" size="0.6875rem" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {draftReady && (
+                  <div className="workflow-intake-decision">
+                    <Button disabled={busy || !intakeId} onClick={() => confirmMutation.mutate()} type="button">
+                      <Codicon
+                        name={confirmMutation.isPending ? 'loading' : 'check'}
+                        size="0.875rem"
+                        spinning={confirmMutation.isPending}
+                      />
+                      {copy.initializeWorkflow}
+                    </Button>
+                    <span>{copy.reviseWorkflowHint}</span>
+                  </div>
+                )}
+                <div className="workflow-intake-composer__row">
+                  <div className="workflow-intake-composer__menu">
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button
+                          className="workflow-intake-reference-trigger"
+                          disabled={busy && Boolean(intakeId)}
+                          type="button"
+                          variant="ghost"
+                        >
+                          <Codicon name="add" size="0.875rem" />
+                          <span>{copy.projectReferences}</span>
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="start" className="w-56" side="top" sideOffset={10}>
+                        <DropdownMenuLabel className="text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground/85">
+                          {copy.projectReferences}
+                        </DropdownMenuLabel>
+                        <DropdownMenuItem onSelect={() => chooseReferences('file')}>
+                          <Codicon name="file" size="0.875rem" />
+                          <span>{copy.addReferenceFiles}</span>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onSelect={() => chooseReferences('folder')}>
+                          <Codicon name="folder" size="0.875rem" />
+                          <span>{copy.addReferenceFolder}</span>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  </div>
+                  <div className="workflow-intake-composer__input">
+                    <ComposerRichInput
+                      ariaLabel={copy.taskPlaceholder}
+                      disabled={busy}
+                      onChange={value => {
+                        if (intakeId) {
+                          setReply(value)
+                        } else {
+                          setGoal(value)
+                        }
+                      }}
+                      onSubmit={submitPlanningMessage}
+                      placeholder={composerPlaceholder}
+                      value={composerValue}
+                    />
+                  </div>
+                  <div className="workflow-intake-composer__controls">
+                    <Button className="workflow-intake-submit" disabled={!canSubmitComposer} type="submit">
+                      <Codicon
+                        name={busy ? 'loading' : intakeId ? 'send' : 'sparkle'}
+                        size="0.875rem"
+                        spinning={busy}
+                      />
+                      {intakeId ? copy.sendPlanningMessage : copy.startPlanning}
+                    </Button>
+                  </div>
+                </div>
+              </ComposerSurface>
+            </form>
           </div>
-          <div className="workflow-intake-stats">
-            <span>{projectId ? copy.draftProjectCreated : copy.draftProjectPending}</span>
-            <span>
-              {copy.answeredQuestions}: {answeredCount}
-            </span>
-          </div>
-          <pre>{summary || copy.summaryPlaceholder}</pre>
-          {error && <div className="workflow-error">{error}</div>}
-          {confirmMutation.isPending && <div className="workflow-status">{copy.startingProjectStatus}</div>}
-          <Button
-            disabled={!intakeId || !ready || Boolean(currentBatch) || confirmMutation.isPending}
-            onClick={() => confirmMutation.mutate()}
-            type="button"
-          >
-            <Codicon
-              name={confirmMutation.isPending ? 'loading' : 'sparkle'}
-              size="0.875rem"
-              spinning={confirmMutation.isPending}
-            />
-            {copy.confirmAndGenerate}
-          </Button>
-        </aside>
+        </div>
       </section>
+      <WorkflowDraftPreviewDialog
+        onOpenChange={setPreviewOpen}
+        onSelectNode={setPreviewNodeId}
+        open={previewOpen}
+        selectedNodeId={previewNodeId}
+        workflow={draftWorkflow}
+      />
     </main>
   )
 }
 
-function WorkflowClarificationBatchCard({
+function WorkflowClarificationPanel({
   batch,
-  disabled = false,
-  onSubmit,
-  submitting = false
+  busy,
+  onSubmit
 }: {
   batch: WorkflowIntakeBatch
-  disabled?: boolean
+  busy: boolean
   onSubmit: (answers: WorkflowIntakeAnswer[]) => void
-  submitting?: boolean
 }) {
   const copy = useWorkflowCopy()
-  const [index, setIndex] = useState(0)
-  const [selectedOptions, setSelectedOptions] = useState<Record<string, string>>({})
-  const [customAnswers, setCustomAnswers] = useState<Record<string, string>>({})
-  const [answers, setAnswers] = useState<Record<string, WorkflowIntakeAnswer>>({})
   const questions = batch.questions
-  const question = questions[index]
+  const [questionIndex, setQuestionIndex] = useState(0)
+  const [draftAnswers, setDraftAnswers] = useState<Record<string, WorkflowIntakeAnswer>>({})
+  const [confirmedAnswers, setConfirmedAnswers] = useState<Record<string, WorkflowIntakeAnswer>>({})
+  const [touchedQuestions, setTouchedQuestions] = useState<Record<string, boolean>>({})
 
   useEffect(() => {
-    setIndex(0)
-    setSelectedOptions({})
-    setCustomAnswers({})
-    setAnswers({})
+    setQuestionIndex(0)
+    setDraftAnswers({})
+    setConfirmedAnswers({})
+    setTouchedQuestions({})
   }, [batch.id])
 
-  if (!question) {
+  const currentQuestion = questions[questionIndex] ?? questions[0]
+  if (!currentQuestion) {
     return null
   }
 
-  const confirmed = Boolean(answers[question.id])
-  const selectedOptionId = selectedOptions[question.id] ?? null
-  const customAnswer = customAnswers[question.id]?.trim() ?? ''
-  const selectedOption = question.options.find(option => option.id === selectedOptionId) ?? null
-  const canConfirm = Boolean(customAnswer || selectedOption)
-  const confirmedCount = questions.filter(item => answers[item.id]).length
+  const currentDraft = draftAnswers[currentQuestion.id]
+  const currentConfirmed = confirmedAnswers[currentQuestion.id]
+  const answeredCount = questions.filter(question => confirmedAnswers[question.id]).length
+  const allAnswered = questions.every(question => confirmedAnswers[question.id])
+  const customValue = currentDraft?.custom ? currentDraft.answer : ''
 
-  const confirmCurrent = () => {
-    if (!canConfirm || disabled || submitting) {
+  const setDraftAnswer = (answer: WorkflowIntakeAnswer | null) => {
+    setDraftAnswers(current => {
+      const next = { ...current }
+      if (answer) {
+        next[currentQuestion.id] = answer
+      } else {
+        delete next[currentQuestion.id]
+      }
+      return next
+    })
+    setConfirmedAnswers(current => {
+      if (!current[currentQuestion.id]) {
+        return current
+      }
+      const next = { ...current }
+      delete next[currentQuestion.id]
+      return next
+    })
+  }
+
+  const confirmCurrentAnswer = () => {
+    const answer = draftAnswers[currentQuestion.id]
+    if (!answer?.answer.trim()) {
+      setTouchedQuestions(current => ({ ...current, [currentQuestion.id]: true }))
       return
     }
 
-    const answer: WorkflowIntakeAnswer = {
-      questionId: question.id,
-      optionId: customAnswer ? selectedOptionId : (selectedOption?.id ?? null),
-      answer: customAnswer || selectedOption?.label || '',
-      custom: Boolean(customAnswer)
+    setConfirmedAnswers(current => ({ ...current, [currentQuestion.id]: answer }))
+    setTouchedQuestions(current => ({ ...current, [currentQuestion.id]: false }))
+    if (questionIndex < questions.length - 1) {
+      setQuestionIndex(questionIndex + 1)
     }
+  }
 
-    const nextAnswers = { ...answers, [question.id]: answer }
-    setAnswers(nextAnswers)
-    const nextQuestionIndex = questions.findIndex(item => !nextAnswers[item.id])
-
-    if (nextQuestionIndex === -1) {
-      onSubmit(questions.map(item => nextAnswers[item.id]!))
-
+  const submitAnswers = () => {
+    if (!allAnswered || busy) {
       return
     }
 
-    setIndex(nextQuestionIndex)
+    onSubmit(
+      questions
+        .map(question => confirmedAnswers[question.id])
+        .filter((answer): answer is WorkflowIntakeAnswer => Boolean(answer))
+    )
   }
 
   return (
-    <section aria-label={copy.clarificationQuestions} className="workflow-clarification-card">
+    <div className="workflow-clarification-card">
       <div className="workflow-clarification-card__header">
         <div>
-          <span>{copy.clarificationQuestions}</span>
-          <strong>
-            {index + 1}/{questions.length}
-          </strong>
+          <strong>{copy.clarificationQuestions}</strong>
+          <span>
+            {questionIndex + 1}/{questions.length}
+          </span>
         </div>
         <div className="workflow-clarification-card__nav">
           <Button
-            aria-label={copy.previousQuestion}
-            disabled={disabled || submitting || index === 0}
-            onClick={() => setIndex(value => Math.max(0, value - 1))}
+            disabled={busy || questionIndex === 0}
+            onClick={() => setQuestionIndex(Math.max(0, questionIndex - 1))}
             size="icon-sm"
             type="button"
             variant="ghost"
           >
-            <Codicon name="chevron-left" size="0.875rem" />
+            <Codicon name="chevron-left" size="0.75rem" />
           </Button>
           <Button
-            aria-label={copy.nextQuestion}
-            disabled={disabled || submitting || index >= questions.length - 1}
-            onClick={() => setIndex(value => Math.min(questions.length - 1, value + 1))}
+            disabled={busy || questionIndex >= questions.length - 1}
+            onClick={() => setQuestionIndex(Math.min(questions.length - 1, questionIndex + 1))}
             size="icon-sm"
             type="button"
             variant="ghost"
           >
-            <Codicon name="chevron-right" size="0.875rem" />
+            <Codicon name="chevron-right" size="0.75rem" />
           </Button>
         </div>
       </div>
 
       <div className="workflow-clarification-question">
-        <h3>{question.question}</h3>
-        {question.detail && <p>{question.detail}</p>}
+        <span className="workflow-clarification-question__eyebrow">
+          {copy.question} {questionIndex + 1}
+        </span>
+        <h3>{currentQuestion.question}</h3>
+        {currentQuestion.detail && <p>{currentQuestion.detail}</p>}
       </div>
 
       <div className="workflow-clarification-options">
-        {question.options.map(option => (
+        {currentQuestion.options.map(option => (
           <button
-            className={cn('workflow-clarification-option', selectedOptionId === option.id && 'is-selected')}
-            disabled={disabled || submitting}
+            className={cn(
+              'workflow-clarification-option',
+              currentDraft?.optionId === option.id && !currentDraft.custom && 'is-selected'
+            )}
+            disabled={busy}
             key={option.id}
-            onClick={() => setSelectedOptions(current => ({ ...current, [question.id]: option.id }))}
+            onClick={() =>
+              setDraftAnswer({
+                questionId: currentQuestion.id,
+                optionId: option.id,
+                answer: option.label,
+                custom: false
+              })
+            }
             type="button"
           >
             <span>
@@ -2676,24 +2811,189 @@ function WorkflowClarificationBatchCard({
       <label className="workflow-clarification-custom">
         {copy.customAnswer}
         <Textarea
-          disabled={disabled || submitting}
-          onChange={event => setCustomAnswers(current => ({ ...current, [question.id]: event.target.value }))}
+          disabled={busy}
+          onChange={event => {
+            const value = event.target.value
+            setDraftAnswer(
+              value.trim()
+                ? {
+                    questionId: currentQuestion.id,
+                    optionId: null,
+                    answer: value,
+                    custom: true
+                  }
+                : null
+            )
+          }}
           placeholder={copy.typeCustomAnswer}
-          value={customAnswers[question.id] ?? ''}
+          value={customValue}
         />
       </label>
 
+      {touchedQuestions[currentQuestion.id] && !currentDraft?.answer.trim() && (
+        <div className="workflow-clarification-error">{copy.answerRequired}</div>
+      )}
+
       <div className="workflow-clarification-footer">
         <span>
-          {copy.answeredQuestions}: {confirmedCount}/{questions.length}
-          {confirmed && ` · ${copy.answerConfirmed}`}
+          {answeredCount}/{questions.length} {allAnswered ? copy.allQuestionsAnswered : copy.answeredQuestions}
+          {currentConfirmed ? ` · ${copy.answerConfirmed}` : ''}
         </span>
-        <Button disabled={!canConfirm || disabled || submitting} onClick={confirmCurrent} type="button">
-          <Codicon name={submitting ? 'loading' : confirmed ? 'check' : 'send'} size="0.875rem" spinning={submitting} />
-          {submitting ? copy.clarificationSubmitting : confirmed ? copy.answerConfirmed : copy.confirmAnswer}
-        </Button>
+        <div className="workflow-clarification-footer__actions">
+          <Button disabled={busy || !currentDraft?.answer.trim()} onClick={confirmCurrentAnswer} type="button">
+            <Codicon name="check" size="0.8125rem" />
+            {copy.confirmAnswer}
+          </Button>
+          <Button disabled={busy || !allAnswered} onClick={submitAnswers} type="button" variant="outline">
+            <Codicon name={busy ? 'loading' : 'send'} size="0.8125rem" spinning={busy} />
+            {copy.submitAnswers}
+          </Button>
+        </div>
       </div>
-    </section>
+    </div>
+  )
+}
+
+function WorkflowDraftPreviewDialog({
+  onOpenChange,
+  onSelectNode,
+  open,
+  selectedNodeId,
+  workflow
+}: {
+  onOpenChange: (open: boolean) => void
+  onSelectNode: (nodeId: string) => void
+  open: boolean
+  selectedNodeId: string | null
+  workflow: Workflow | null
+}) {
+  const copy = useWorkflowCopy()
+  const { resolvedMode } = useTheme()
+  const displayWorkflow = useMemo(() => (workflow ? workflowWithDisplayLayout(workflow) : null), [workflow])
+  const initialNodes = useMemo(() => (displayWorkflow ? toFlowNodes(displayWorkflow) : []), [displayWorkflow])
+  const [previewNodes, setPreviewNodes, onPreviewNodesChange] = useNodesState<FlowNode>(initialNodes)
+  const edges = useMemo(() => (displayWorkflow ? toFlowEdges(displayWorkflow, copy) : []), [copy, displayWorkflow])
+  const selectedNode = useMemo(
+    () => displayWorkflow?.nodes.find(node => node.id === selectedNodeId) ?? displayWorkflow?.nodes[0] ?? null,
+    [displayWorkflow, selectedNodeId]
+  )
+
+  useEffect(() => {
+    setPreviewNodes(initialNodes)
+  }, [initialNodes, setPreviewNodes])
+
+  useEffect(() => {
+    setPreviewNodes(nodes =>
+      nodes.map(node => ({
+        ...node,
+        selected: node.id === selectedNodeId
+      }))
+    )
+  }, [selectedNodeId, setPreviewNodes])
+
+  if (!displayWorkflow) {
+    return null
+  }
+
+  const outgoing = selectedNode
+    ? displayWorkflow.edges
+        .filter(edge => edge.source === selectedNode.id)
+        .map(edge => ({
+          edge,
+          target: displayWorkflow.nodes.find(node => node.id === edge.target)
+        }))
+    : []
+
+  return (
+    <Dialog onOpenChange={onOpenChange} open={open}>
+      <DialogContent className="workflow-draft-preview-dialog">
+        <DialogHeader className="workflow-draft-preview-dialog__header">
+          <DialogTitle>{copy.workflowDraftPreviewTitle}</DialogTitle>
+          <DialogDescription>{copy.workflowDraftPreviewDescription}</DialogDescription>
+        </DialogHeader>
+        <div className="workflow-center workflow-draft-preview">
+          <div className="workflow-draft-preview__canvas">
+            <ReactFlow
+              className="workflow-flow workflow-flow--preview"
+              colorMode={resolvedMode}
+              connectOnClick={false}
+              edges={edges}
+              elementsSelectable
+              fitView
+              maxZoom={1.4}
+              minZoom={0.35}
+              nodes={previewNodes}
+              nodesConnectable={false}
+              nodesDraggable
+              nodeTypes={nodeTypes}
+              onNodeClick={(_event, node) => onSelectNode(node.id)}
+              onNodesChange={onPreviewNodesChange}
+              panOnDrag
+              proOptions={{ hideAttribution: true }}
+              fitViewOptions={{ padding: 0.18 }}
+            >
+              <Background color="var(--workflow-canvas-dot)" gap={24} size={1} />
+              <Controls className="workflow-controls" showInteractive={false} />
+            </ReactFlow>
+          </div>
+          <aside className="workflow-draft-preview__detail">
+            {selectedNode ? (
+              <>
+                <div className="workflow-drawer-header">
+                  <div>
+                    <h2>{selectedNode.title}</h2>
+                    <p>{selectedNode.id}</p>
+                  </div>
+                  <span className="workflow-status-pill tone-info">
+                    {copy.nodeType[selectedNode.type as keyof typeof copy.nodeType] ?? selectedNode.type}
+                  </span>
+                </div>
+                <section>
+                  <h3>{copy.editExecutionPrompt}</h3>
+                  <p>{selectedNode.description || copy.noTextPreviewAvailable}</p>
+                </section>
+                <section>
+                  <h3>{copy.skills}</h3>
+                  <p>{selectedNode.skills.length ? selectedNode.skills.join(' / ') : copy.noSkill}</p>
+                </section>
+                <section>
+                  <h3>{copy.reviewRules}</h3>
+                  {selectedNode.reviewRules.checklist.length ? (
+                    <ul>
+                      {selectedNode.reviewRules.checklist.map(item => (
+                        <li key={item}>{item}</li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p>{copy.noExplicitReviewRules}</p>
+                  )}
+                </section>
+                <section>
+                  <h3>{copy.workflowDraftEdges}</h3>
+                  {outgoing.length ? (
+                    <ul>
+                      {outgoing.map(({ edge, target }) => (
+                        <li key={edge.id}>
+                          <strong>{edgeSourceHandle(edge) === 'failure' ? copy.failureOutput : copy.successOutput}</strong>
+                          <span>{target?.title ?? edge.target}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p>{copy.noDraftOutgoingEdges}</p>
+                  )}
+                </section>
+              </>
+            ) : (
+              <div className="workflow-drawer-empty">
+                <Codicon name="graph" size="1.25rem" />
+                <span>{copy.drawerEmptyNode}</span>
+              </div>
+            )}
+          </aside>
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -2753,13 +3053,168 @@ function EmptyWorkbench({
   )
 }
 
+function workflowPositionIsFinite(node: WorkflowNode): boolean {
+  return Number.isFinite(node.position?.x) && Number.isFinite(node.position?.y)
+}
+
+function workflowNeedsDisplayLayout(workflow: Workflow): boolean {
+  if (!workflow.nodes.length) {
+    return false
+  }
+
+  if (workflow.nodes.some(node => !workflowPositionIsFinite(node))) {
+    return true
+  }
+
+  if (workflow.nodes.length === 1) {
+    return false
+  }
+
+  const positions = workflow.nodes.map(node => node.position)
+  const allNearOrigin = positions.every(position => Math.abs(position.x) < 8 && Math.abs(position.y) < 8)
+
+  if (allNearOrigin) {
+    return true
+  }
+
+  const xs = positions.map(position => position.x)
+  const ys = positions.map(position => position.y)
+  const xSpan = Math.max(...xs) - Math.min(...xs)
+  const ySpan = Math.max(...ys) - Math.min(...ys)
+  const tooLongForInitialFit =
+    workflow.nodes.length > WORKFLOW_LAYOUT_MAX_COLUMNS + 1 &&
+    xSpan > WORKFLOW_LAYOUT_COLUMN_GAP * WORKFLOW_LAYOUT_MAX_COLUMNS &&
+    ySpan < WORKFLOW_LAYOUT_BAND_GAP
+
+  if (tooLongForInitialFit) {
+    return true
+  }
+
+  for (let outer = 0; outer < positions.length; outer += 1) {
+    for (let inner = outer + 1; inner < positions.length; inner += 1) {
+      const dx = Math.abs(positions[outer].x - positions[inner].x)
+      const dy = Math.abs(positions[outer].y - positions[inner].y)
+
+      if (dx < WORKFLOW_NODE_WIDTH * 0.92 && dy < WORKFLOW_NODE_HEIGHT * 0.9) {
+        return true
+      }
+    }
+  }
+
+  return false
+}
+
+function workflowWithDisplayLayout(workflow: Workflow): Workflow {
+  if (!workflowNeedsDisplayLayout(workflow)) {
+    return workflow
+  }
+
+  const nodeIds = new Set(workflow.nodes.map(node => node.id))
+  const originalIndex = new Map(workflow.nodes.map((node, index) => [node.id, index]))
+  const incomingSuccessCount = new Map(workflow.nodes.map(node => [node.id, 0]))
+  const successEdges = workflow.edges.filter(edge => {
+    const valid = nodeIds.has(edge.source) && nodeIds.has(edge.target)
+
+    return valid && edgeSourceHandle(edge) === 'success'
+  })
+
+  for (const edge of successEdges) {
+    incomingSuccessCount.set(edge.target, (incomingSuccessCount.get(edge.target) ?? 0) + 1)
+  }
+
+  const roots = workflow.nodes
+    .filter(node => (incomingSuccessCount.get(node.id) ?? 0) === 0)
+    .map(node => node.id)
+  const depthById = new Map<string, number>()
+
+  const rootIds = roots.length ? roots : workflow.nodes[0] ? [workflow.nodes[0].id] : []
+
+  for (const id of rootIds) {
+    depthById.set(id, 0)
+  }
+
+  for (let pass = 0; pass < workflow.nodes.length; pass += 1) {
+    let changed = false
+
+    for (const edge of successEdges) {
+      const sourceDepth = depthById.get(edge.source)
+
+      if (sourceDepth === undefined) {
+        continue
+      }
+
+      const nextDepth = sourceDepth + 1
+      const currentDepth = depthById.get(edge.target)
+
+      if (currentDepth === undefined || nextDepth > currentDepth) {
+        depthById.set(edge.target, nextDepth)
+        changed = true
+      }
+    }
+
+    if (!changed) {
+      break
+    }
+  }
+
+  for (const node of workflow.nodes) {
+    if (!depthById.has(node.id)) {
+      depthById.set(node.id, originalIndex.get(node.id) ?? 0)
+    }
+  }
+
+  const maxDepth = Math.max(...[...depthById.values()])
+  const columnsPerBand = Math.max(1, Math.min(WORKFLOW_LAYOUT_MAX_COLUMNS, maxDepth + 1))
+  const groups = new Map<number, WorkflowNode[]>()
+
+  for (const node of workflow.nodes) {
+    const depth = depthById.get(node.id) ?? 0
+    const group = groups.get(depth) ?? []
+    group.push(node)
+    groups.set(depth, group)
+  }
+
+  const positionById = new Map<string, { x: number; y: number }>()
+
+  for (const [depth, nodes] of groups.entries()) {
+    const band = Math.floor(depth / columnsPerBand)
+    const column = depth % columnsPerBand
+    const sortedNodes = [...nodes].sort((a, b) => {
+      const ay = workflowPositionIsFinite(a) ? a.position.y : 0
+      const by = workflowPositionIsFinite(b) ? b.position.y : 0
+
+      if (Math.abs(ay - by) > 1) {
+        return ay - by
+      }
+
+      return (originalIndex.get(a.id) ?? 0) - (originalIndex.get(b.id) ?? 0)
+    })
+    const yStart = band * WORKFLOW_LAYOUT_BAND_GAP - ((sortedNodes.length - 1) * WORKFLOW_LAYOUT_ROW_GAP) / 2
+
+    sortedNodes.forEach((node, index) => {
+      positionById.set(node.id, {
+        x: column * WORKFLOW_LAYOUT_COLUMN_GAP,
+        y: yStart + index * WORKFLOW_LAYOUT_ROW_GAP
+      })
+    })
+  }
+
+  return {
+    ...workflow,
+    nodes: workflow.nodes.map(node => ({
+      ...node,
+      position: positionById.get(node.id) ?? node.position
+    }))
+  }
+}
+
 function toFlowNodes(workflow: Workflow): FlowNode[] {
   return workflow.nodes.map(node => ({
     id: node.id,
     type: 'workflow',
     position: node.position,
-    width: 260,
-    height: 112,
+    width: WORKFLOW_NODE_WIDTH,
+    height: WORKFLOW_NODE_HEIGHT,
     data: { decisionNode: workflowNodeIsDecisionNode(workflow, node), node }
   }))
 }

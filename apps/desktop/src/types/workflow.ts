@@ -259,10 +259,14 @@ export interface WorkflowIntakeAnswer {
 export interface WorkflowIntakeResponse {
   ok: boolean
   intakeId: string
-  projectId?: string
+  projectId?: string | null
   messages: WorkflowIntakeMessage[]
   ready: boolean
   summary: string
+  phase?: 'clarifying' | 'draft_ready' | 'error' | 'generating' | 'idle'
+  draftMarkdown?: string
+  draftWorkflow?: Workflow | null
+  canConfirm?: boolean
   currentBatch?: WorkflowIntakeBatch | null
   answeredCount?: number
   error?: string | null
