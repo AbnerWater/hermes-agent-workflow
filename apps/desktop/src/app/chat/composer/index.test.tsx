@@ -44,7 +44,7 @@ const chatBarState: ChatBarState = {
   voice: { active: false, enabled: false }
 }
 
-function ChatBarHarness() {
+function ChatBarHarness({ placeholderOverride }: { placeholderOverride?: string } = {}) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     isRunning: false,
     messages: [],
@@ -58,6 +58,7 @@ function ChatBarHarness() {
         disabled={false}
         onCancel={vi.fn()}
         onSubmit={vi.fn(async () => true)}
+        placeholderOverride={placeholderOverride}
         state={chatBarState}
       />
     </AssistantRuntimeProvider>
@@ -94,5 +95,14 @@ describe('ChatBar composer action state', () => {
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Start voice conversation' })).toBeTruthy())
     expect(screen.queryByRole('button', { name: 'Send' })).toBeNull()
+  })
+
+  it('uses a provided placeholder override without changing submit state', () => {
+    render(<ChatBarHarness placeholderOverride="Tell Hermes what to adjust in this workflow draft..." />)
+
+    const editor = screen.getByRole('textbox', { name: 'Message' })
+
+    expect(editor.getAttribute('data-placeholder')).toBe('Tell Hermes what to adjust in this workflow draft...')
+    expect(screen.getByRole('button', { name: 'Start voice conversation' })).toBeTruthy()
   })
 })

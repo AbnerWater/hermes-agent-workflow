@@ -424,6 +424,7 @@ export function ChatView({
   const [workflowReferences, setWorkflowReferences] = useState<string[]>([])
   const [workflowMessages, setWorkflowMessages] = useState<WorkflowIntakeMessage[]>([])
   const [workflowPhase, setWorkflowPhase] = useState<WorkflowIntakeResponse['phase']>('idle')
+  const [workflowPlanningStarted, setWorkflowPlanningStarted] = useState(false)
   const [workflowDraftMarkdown, setWorkflowDraftMarkdown] = useState('')
   const [workflowDraft, setWorkflowDraft] = useState<Workflow | null>(null)
   const [workflowBatch, setWorkflowBatch] = useState<WorkflowIntakeBatch | null>(null)
@@ -493,6 +494,7 @@ export function ChatView({
     setWorkflowReferences([])
     setWorkflowMessages([])
     setWorkflowPhase('idle')
+    setWorkflowPlanningStarted(false)
     setWorkflowDraftMarkdown('')
     setWorkflowDraft(null)
     setWorkflowBatch(null)
@@ -525,6 +527,7 @@ export function ChatView({
   )
 
   const applyWorkflowIntakeResponse = useCallback((response: WorkflowIntakeResponse) => {
+    setWorkflowPlanningStarted(true)
     setWorkflowIntakeId(response.intakeId)
     setWorkflowMessages(response.messages)
     setWorkflowError(response.error ?? null)
@@ -539,7 +542,16 @@ export function ChatView({
   }, [])
 
   const workflowDraftReady = Boolean(workflowDraft && (workflowPhase === 'draft_ready' || workflowDraftMarkdown))
+  const workflowTranscriptActive =
+    workflowModeActive && (workflowPlanningStarted || workflowMessages.length > 0 || workflowPhase !== 'idle')
   const workflowActiveBatch = Boolean(workflowBatch?.questions.length && !workflowDraftReady)
+  const workflowPlaceholderOverride = workflowModeActive
+    ? workflowDraftReady
+      ? workflowCopy.revisionDetailsPlaceholder
+      : workflowTranscriptActive
+        ? workflowCopy.taskPlaceholder
+        : undefined
+    : undefined
   const workflowDraftMessageIndex = useMemo(() => {
     if (!workflowDraftReady) {
       return -1
@@ -613,6 +625,7 @@ export function ChatView({
       const nextReferences = mergeWorkflowReferences(workflowReferences, incomingReferences)
       setWorkflowReferences(nextReferences)
       setWorkflowError(null)
+      setWorkflowPlanningStarted(true)
 
       try {
         if (!workflowIntakeId) {
@@ -745,7 +758,7 @@ export function ChatView({
         {...dropHandlers}
       >
         <AssistantRuntimeProvider runtime={runtime}>
-          {workflowModeActive ? (
+          {workflowTranscriptActive ? (
             <WorkflowPlanningThread
               batch={workflowBatch}
               busy={workflowBusy}
@@ -812,7 +825,8 @@ export function ChatView({
                   workflowModeActive ? submitWorkflowPlanning(text, options) : onSubmit(text, options)
                 }
                 onTranscribeAudio={onTranscribeAudio}
-                placement={showIntro && !workflowIntakeId && workflowMessages.length === 0 ? 'center' : 'bottom'}
+                placeholderOverride={workflowPlaceholderOverride}
+                placement={showIntro && !workflowTranscriptActive ? 'center' : 'bottom'}
                 queueSessionKey={selectedSessionId || activeSessionId}
                 sessionId={activeSessionId}
                 state={

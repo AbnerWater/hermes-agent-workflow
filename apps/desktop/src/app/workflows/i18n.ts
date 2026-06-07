@@ -326,7 +326,7 @@ export const WORKFLOW_COPY = {
     references: '资料',
     removeReference: '移除 reference',
     reviseWorkflowHint: '否：在下方告诉 Hermes 需要调整的内容，然后发送以重新生成草案。',
-    revisionDetailsPlaceholder: '告诉 Hermes 这版 workflow 草案需要如何调整...',
+    revisionDetailsPlaceholder: '告诉 Hermes 当前 workflow 还有什么地方需要调整',
     skillProjectHint: '项目级启用列表，节点可再绑定子集。',
     regenerateWorkflow: '生成 Workflow',
     returnForRevision: '返工',

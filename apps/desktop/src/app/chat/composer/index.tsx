@@ -101,6 +101,7 @@ export function ChatBar({
   gateway,
   maxRecordingSeconds = 120,
   placement = 'bottom',
+  placeholderOverride,
   queueSessionKey,
   sessionId,
   state,
@@ -221,7 +222,7 @@ export function ChatBar({
     ? gatewayState === 'closed' || gatewayState === 'error'
       ? chatCopy.reconnectingHermes
       : chatCopy.startingHermes
-    : restingPlaceholder
+    : (placeholderOverride ?? restingPlaceholder)
 
   const focusInput = useCallback(() => {
     focusComposerInput(editorRef.current)

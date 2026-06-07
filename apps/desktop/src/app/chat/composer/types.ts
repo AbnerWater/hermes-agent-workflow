@@ -35,6 +35,7 @@ export interface ChatBarProps {
   focusKey?: string | null
   maxRecordingSeconds?: number
   placement?: 'bottom' | 'center'
+  placeholderOverride?: string
   state: ChatBarState
   submitLabelOverride?: string
   gateway?: HermesGateway | null
