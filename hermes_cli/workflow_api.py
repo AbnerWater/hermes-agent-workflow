@@ -224,7 +224,7 @@ class ProjectBundle(BaseModel):
 
 
 class ProjectCreateRequest(BaseModel):
-    name: str
+    name: str = ""
     goal: str = ""
     root: Optional[str] = None
     references: List[str] = Field(default_factory=list)
@@ -236,6 +236,7 @@ class WorkflowIntakeStartRequest(ProjectCreateRequest):
 
 class WorkflowIntakeMessageRequest(BaseModel):
     message: str
+    references: List[str] = Field(default_factory=list)
 
 
 class WorkflowIntakeOption(BaseModel):
@@ -656,7 +657,7 @@ def create_workflow_router(ws_auth_ok: Callable[[WebSocket], bool]) -> APIRouter
 
     @router.post("/intake/{intake_id}/message")
     async def message_intake(intake_id: str, body: WorkflowIntakeMessageRequest) -> Dict[str, Any]:
-        return _message_intake_session(intake_id, body.message)
+        return _message_intake_session(intake_id, body.message, body.references)
 
     @router.post("/intake/{intake_id}/answers")
     async def answer_intake(intake_id: str, body: WorkflowIntakeAnswersRequest) -> Dict[str, Any]:
@@ -1488,8 +1489,6 @@ def _execute_node(project: WorkflowProject, workflow: Workflow, run: ExecutionRu
 def _start_intake_session(body: WorkflowIntakeStartRequest) -> Dict[str, Any]:
     name = body.name.strip()
     goal = body.goal.strip()
-    if not name:
-        raise HTTPException(status_code=422, detail="Project name is required")
     if not goal:
         raise HTTPException(status_code=422, detail="Task description is required")
     intake_id = _new_id("intake")
@@ -1516,7 +1515,7 @@ def _start_intake_session(body: WorkflowIntakeStartRequest) -> Dict[str, Any]:
     return _advance_intake_with_agent(_intake_transient_project(state), state, trigger="start")
 
 
-def _message_intake_session(intake_id: str, message: str) -> Dict[str, Any]:
+def _message_intake_session(intake_id: str, message: str, references: Optional[List[str]] = None) -> Dict[str, Any]:
     text = _strip_reasoning(message)
     if not text:
         raise HTTPException(status_code=422, detail="Intake message is required")
@@ -1524,6 +1523,15 @@ def _message_intake_session(intake_id: str, message: str) -> Dict[str, Any]:
     project = _intake_transient_project(state)
     if state.get("projectId"):
         project = _load_project(str(state["projectId"]))
+    if references:
+        existing = [str(path) for path in state.get("references", []) if str(path).strip()]
+        seen = set(existing)
+        for path in references:
+            value = str(path).strip()
+            if value and value not in seen:
+                existing.append(value)
+                seen.add(value)
+        state["references"] = existing
     _append_intake_message(state, "user", text)
     state["phase"] = "clarifying"
     state["ready"] = False
@@ -1669,6 +1677,7 @@ def _workflow_intake_prompt(
             "Each clarification question must have exactly three options sorted by recommendation priority. The UI will add a custom answer field.",
             "Use reply only as a short introduction to the batch. Do not duplicate the full question and option list in reply.",
             "If enough information is available, set phase='draft_ready', include draftMarkdown, and include workflow.",
+            "When phase='draft_ready', choose a concise workflow.title that can be used as the project name.",
             "If the user asks for changes to a previous draft, revise the draft and return phase='draft_ready' again.",
             "Do not use fixed question templates. Only ask questions that materially change the workflow plan.",
             "",
@@ -1680,7 +1689,7 @@ def _workflow_intake_prompt(
             "Use sourceHandle='success' for pass/continue and sourceHandle='failure' only from review/test nodes for failed review or revision loops.",
             "",
             f"Trigger: {trigger}",
-            f"Project name: {state.get('name') or project.name}",
+            f"Project name: {state.get('name') or 'Choose from the task when the draft is ready'}",
             f"Requested project root: {state.get('root') or 'Use Hermes default workflows directory'}",
             f"Initial task description:\n{state.get('goal') or project.goal or 'No task description provided.'}",
             f"Enabled references JSON:\n{json.dumps(references, ensure_ascii=False, indent=2)}",
@@ -2071,9 +2080,9 @@ def _confirm_intake_draft(intake_id: str, state: Dict[str, Any], body: WorkflowI
     if not isinstance(draft_raw, dict):
         raise HTTPException(status_code=422, detail="Workflow draft is not ready")
 
-    name = body.name.strip() or str(state.get("name") or "Hermes Workflow Project")
-    goal = body.goal.strip() or str(state.get("goal") or "")
     draft_markdown = _strip_reasoning(str(state.get("draftMarkdown") or body.summary or "")).strip()
+    name = body.name.strip() or _intake_project_name_from_draft(draft_raw, draft_markdown)
+    goal = body.goal.strip() or str(state.get("goal") or "")
     goal_parts = [goal, f"Confirmed workflow draft:\n{draft_markdown}" if draft_markdown else ""]
     references = body.references if body.references else list(state.get("references") or [])
 
@@ -2112,6 +2121,19 @@ def _confirm_intake_draft(intake_id: str, state: Dict[str, Any], body: WorkflowI
     state["confirmedAt"] = time.time()
     _remember_intake_state(project, state)
     return _project_bundle(project.id)
+
+
+def _intake_project_name_from_draft(draft_raw: Dict[str, Any], draft_markdown: str) -> str:
+    title = str(draft_raw.get("title") or "").strip()
+    if title:
+        return title[:96]
+
+    for line in draft_markdown.splitlines():
+        cleaned = line.strip().lstrip("#").strip()
+        if cleaned:
+            return cleaned[:96]
+
+    return "Hermes Workflow Project"
 
 
 def _finalize_intake_project(
@@ -2153,7 +2175,7 @@ def _create_legacy_intake_project(
     goal_parts = [body.goal.strip() if body.goal else "", f"Clarification summary:\n{summary}" if summary else ""]
     project = _create_project(
         ProjectCreateRequest(
-            name=body.name,
+            name=body.name.strip() or _intake_project_name_from_draft({}, summary),
             goal="\n\n".join(part for part in goal_parts if part),
             root=body.root,
             references=body.references,

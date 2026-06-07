@@ -1,5 +1,6 @@
 import type { HermesGateway } from '@/hermes'
 import type { ComposerAttachment } from '@/store/composer'
+import type { ReactNode } from 'react'
 
 import type { DroppedFile } from '../hooks/use-composer-actions'
 
@@ -30,9 +31,12 @@ export interface ChatBarState {
 export interface ChatBarProps {
   busy: boolean
   disabled: boolean
+  footerSlot?: ReactNode
   focusKey?: string | null
   maxRecordingSeconds?: number
+  placement?: 'bottom' | 'center'
   state: ChatBarState
+  submitLabelOverride?: string
   gateway?: HermesGateway | null
   queueSessionKey?: string | null
   sessionId?: string | null

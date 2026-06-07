@@ -23,7 +23,7 @@ import {
 } from '@xyflow/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Navigate, useSearchParams } from 'react-router-dom'
 
 import { Backdrop } from '@/components/Backdrop'
 import { CompactMarkdown } from '@/components/chat/compact-markdown'
@@ -99,6 +99,7 @@ import type {
 
 import { type WorkflowCopy, workflowCopyFor } from './i18n'
 import { applyWorkflowProjectChange, dispatchWorkflowProjectsChanged } from './project-events'
+import { NEW_CHAT_ROUTE } from '../routes'
 
 type DrawerMode = 'files' | 'references' | 'skills' | 'snapshots' | 'task'
 
@@ -247,6 +248,12 @@ function WorkflowNodeCard({ data, selected }: NodeProps<FlowNode>) {
 const nodeTypes = { workflow: WorkflowNodeCard }
 
 export function WorkflowsView() {
+  const [searchParams] = useSearchParams()
+
+  if (searchParams.has('new')) {
+    return <Navigate replace to={`${NEW_CHAT_ROUTE}?mode=workflow`} />
+  }
+
   return (
     <ReactFlowProvider>
       <WorkflowWorkbench />
@@ -2661,7 +2668,7 @@ function WorkflowIntakePage({ onComplete }: { onComplete: (bundle: ProjectBundle
   )
 }
 
-function WorkflowClarificationPanel({
+export function WorkflowClarificationPanel({
   batch,
   busy,
   onSubmit
@@ -2854,7 +2861,7 @@ function WorkflowClarificationPanel({
   )
 }
 
-function WorkflowDraftPreviewDialog({
+export function WorkflowDraftPreviewDialog({
   onOpenChange,
   onSelectNode,
   open,

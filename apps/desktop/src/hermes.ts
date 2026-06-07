@@ -395,11 +395,15 @@ export function startWorkflowIntake(payload: WorkflowIntakePayload): Promise<Wor
   })
 }
 
-export function sendWorkflowIntakeMessage(intakeId: string, message: string): Promise<WorkflowIntakeResponse> {
+export function sendWorkflowIntakeMessage(
+  intakeId: string,
+  message: string,
+  references?: string[]
+): Promise<WorkflowIntakeResponse> {
   return window.hermesDesktop.api<WorkflowIntakeResponse>({
     path: `/api/workflows/intake/${encodeURIComponent(intakeId)}/message`,
     method: 'POST',
-    body: { message },
+    body: { message, references },
     timeoutMs: WORKFLOW_LLM_REQUEST_TIMEOUT_MS
   })
 }

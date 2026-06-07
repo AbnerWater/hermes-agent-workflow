@@ -501,7 +501,6 @@ def test_workflow_intake_plans_draft_then_confirms_project(tmp_path, monkeypatch
     started = client.post(
         "/api/workflows/intake/start",
         json={
-            "name": "Intake Workflow",
             "goal": "Build a workflow from structured clarification.",
             "root": str(tmp_path / "intake"),
             "references": [],
@@ -518,7 +517,7 @@ def test_workflow_intake_plans_draft_then_confirms_project(tmp_path, monkeypatch
 
     planned = client.post(
         f"/api/workflows/intake/{start_data['intakeId']}/message",
-        json={"message": "Use a validated report with a strict review gate."},
+        json={"message": "Use a validated report with a strict review gate.", "references": [str(tmp_path / "extra.md")]},
     )
     assert planned.status_code == 200
     planned_data = planned.json()
@@ -531,7 +530,6 @@ def test_workflow_intake_plans_draft_then_confirms_project(tmp_path, monkeypatch
     confirmed = client.post(
         f"/api/workflows/intake/{start_data['intakeId']}/confirm",
         json={
-            "name": "Intake Workflow",
             "goal": "Build a workflow from structured clarification.",
             "root": str(tmp_path / "intake"),
             "references": [],
@@ -539,7 +537,9 @@ def test_workflow_intake_plans_draft_then_confirms_project(tmp_path, monkeypatch
     )
     assert confirmed.status_code == 200
     bundle = confirmed.json()
+    assert bundle["project"]["name"] == "Draft Intake Workflow"
     assert bundle["project"]["status"] == "generated"
+    assert any(ref["path"] == str(tmp_path / "extra.md") for ref in bundle["references"])
     assert bundle["workflow"]["nodes"]
     assert (tmp_path / "intake" / ".agent-workflow" / "project.json").exists()
     assert wf._read_registry()[bundle["project"]["id"]] == bundle["project"]["root"]

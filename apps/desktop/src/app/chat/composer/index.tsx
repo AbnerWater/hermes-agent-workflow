@@ -70,6 +70,7 @@ import {
 import { SkinSlashPopover } from './skin-slash-popover'
 import {
   COMPOSER_ABSOLUTE_ROOT_CLASS,
+  COMPOSER_CENTER_ROOT_CLASS,
   COMPOSER_SINGLE_LINE_MAX_PX,
   COMPOSER_STACK_BREAKPOINT_PX,
   ComposerSurface
@@ -95,12 +96,15 @@ export function ChatBar({
   busy,
   cwd,
   disabled,
+  footerSlot,
   focusKey,
   gateway,
   maxRecordingSeconds = 120,
+  placement = 'bottom',
   queueSessionKey,
   sessionId,
   state,
+  submitLabelOverride,
   onCancel,
   onAddUrl,
   onAttachDroppedItems,
@@ -149,6 +153,7 @@ export function ChatBar({
   const [dragActive, setDragActive] = useState(false)
   const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
   const [focusRequestId, setFocusRequestId] = useState(0)
+  const [composerDraft, setComposerDraft] = useState(draft)
   const dragDepthRef = useRef(0)
   const composingRef = useRef(false) // true during IME composition (CJK input)
   const lastSpokenIdRef = useRef<string | null>(null)
@@ -159,11 +164,11 @@ export function ChatBar({
   const slash = useSlashCompletions({ gateway: gateway ?? null })
 
   const stacked = expanded || narrow || tight
-  const hasComposerPayload = draft.trim().length > 0 || attachments.length > 0
+  const hasComposerPayload = composerDraft.trim().length > 0 || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
-  const showHelpHint = draft === '?'
+  const showHelpHint = composerDraft === '?'
 
   const gatewayState = useStore($gatewayState)
 
@@ -227,6 +232,31 @@ export function ChatBar({
     setFocusRequestId(id => id + 1)
   }, [])
 
+  const syncDraftText = useCallback(
+    (next: string, options: { focusEnd?: boolean; renderEditor?: boolean } = {}) => {
+      draftRef.current = next
+      setComposerDraft(current => (current === next ? current : next))
+      aui.composer().setText(next)
+
+      if (!options.renderEditor) {
+        return
+      }
+
+      const editor = editorRef.current
+
+      if (!editor) {
+        return
+      }
+
+      renderComposerContents(editor, next)
+
+      if (options.focusEnd) {
+        placeCaretEnd(editor)
+      }
+    },
+    [aui]
+  )
+
   const appendExternalText = useCallback(
     (text: string, mode: ComposerInsertMode) => {
       const value = text.trim()
@@ -239,19 +269,11 @@ export function ChatBar({
       const sep = mode === 'inline' ? (base ? ' ' : '') : base && !base.endsWith('\n') ? '\n\n' : ''
       const next = `${base}${sep}${value}`
 
-      draftRef.current = next
-      aui.composer().setText(next)
-
-      const editor = editorRef.current
-
-      if (editor) {
-        renderComposerContents(editor, next)
-        placeCaretEnd(editor)
-      }
+      syncDraftText(next, { focusEnd: true, renderEditor: true })
 
       setFocusRequestId(id => id + 1)
     },
-    [aui]
+    [syncDraftText]
   )
 
   useEffect(() => {
@@ -293,6 +315,7 @@ export function ChatBar({
   // path instead.
   useEffect(() => {
     draftRef.current = draft
+    setComposerDraft(current => (current === draft ? current : draft))
 
     const editor = editorRef.current
 
@@ -315,7 +338,7 @@ export function ChatBar({
   // can't: an explicit newline (expand before layout settles) and an emptied
   // draft (collapse back). We never read scrollHeight per keystroke.
   useEffect(() => {
-    if (!draft) {
+    if (!composerDraft) {
       setExpanded(false)
 
       return
@@ -325,10 +348,10 @@ export function ChatBar({
       return
     }
 
-    if (draft.includes('\n')) {
+    if (composerDraft.includes('\n')) {
       setExpanded(true)
     }
-  }, [draft, expanded])
+  }, [composerDraft, expanded])
 
   // Bucket measured heights so we only invalidate the global CSS var when
   // the size crosses a meaningful threshold. Without bucketing, the editor
@@ -407,9 +430,6 @@ export function ChatBar({
     const sep = currentDraft && !currentDraft.endsWith('\n') ? '\n' : ''
     const nextDraft = `${currentDraft}${sep}${text}`
 
-    draftRef.current = nextDraft
-    aui.composer().setText(nextDraft)
-
     // Push the new text into the contentEditable editor directly. Setting the
     // assistant-ui composer state alone is not enough: the draft→editor sync
     // effect only re-renders the editor when it is NOT focused
@@ -417,12 +437,7 @@ export function ChatBar({
     // typically run while the editor has (or immediately regains) focus — so
     // the store would hold the text but the visible editor would stay empty
     // and there'd be nothing to send. Mirror appendExternalText here.
-    const editor = editorRef.current
-
-    if (editor) {
-      renderComposerContents(editor, nextDraft)
-      placeCaretEnd(editor)
-    }
+    syncDraftText(nextDraft, { focusEnd: true, renderEditor: true })
 
     requestMainFocus()
   }
@@ -440,8 +455,7 @@ export function ChatBar({
       return false
     }
 
-    draftRef.current = nextDraft
-    aui.composer().setText(nextDraft)
+    syncDraftText(nextDraft)
     requestMainFocus()
 
     return true
@@ -461,8 +475,7 @@ export function ChatBar({
   }, [])
 
   const selectSkinSlashCommand = (command: string) => {
-    draftRef.current = command
-    aui.composer().setText(command)
+    syncDraftText(command, { focusEnd: true, renderEditor: true })
     requestMainFocus()
   }
 
@@ -504,8 +517,7 @@ export function ChatBar({
     event.preventDefault()
     document.execCommand('insertText', false, pastedText)
     const nextDraft = composerPlainText(event.currentTarget)
-    draftRef.current = nextDraft
-    aui.composer().setText(nextDraft)
+    syncDraftText(nextDraft)
   }
 
   const [trigger, setTrigger] = useState<TriggerState | null>(null)
@@ -574,8 +586,7 @@ export function ChatBar({
     const nextDraft = composerPlainText(editor)
 
     if (nextDraft !== draftRef.current) {
-      draftRef.current = nextDraft
-      aui.composer().setText(nextDraft)
+      syncDraftText(nextDraft)
     }
 
     window.setTimeout(refreshTrigger, 0)
@@ -619,8 +630,7 @@ export function ChatBar({
     const directive = !starter && serialized.match(/^@([^:]+):(.+)$/)
 
     const finish = () => {
-      draftRef.current = composerPlainText(editor)
-      aui.composer().setText(draftRef.current)
+      syncDraftText(composerPlainText(editor))
       requestMainFocus()
       starter ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
     }
@@ -861,25 +871,12 @@ export function ChatBar({
   }
 
   const clearDraft = useCallback(() => {
-    aui.composer().setText('')
-    draftRef.current = ''
-
-    if (editorRef.current) {
-      editorRef.current.replaceChildren()
-    }
-  }, [aui])
+    syncDraftText('', { renderEditor: true })
+  }, [syncDraftText])
 
   const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
-    draftRef.current = text
-    aui.composer().setText(text)
+    syncDraftText(text, { focusEnd: true, renderEditor: true })
     $composerAttachments.set(cloneAttachments(attachments))
-
-    const editor = editorRef.current
-
-    if (editor) {
-      renderComposerContents(editor, text)
-      placeCaretEnd(editor)
-    }
   }
 
   const beginQueuedEdit = (entry: QueuedPromptEntry) => {
@@ -925,11 +922,13 @@ export function ChatBar({
   }
 
   const queueCurrentDraft = useCallback(() => {
-    if (!activeQueueSessionKey || (!draft.trim() && attachments.length === 0)) {
+    const text = draftRef.current
+
+    if (!activeQueueSessionKey || (!text.trim() && attachments.length === 0)) {
       return false
     }
 
-    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text: draft, attachments })) {
+    if (!enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments })) {
       return false
     }
 
@@ -938,7 +937,7 @@ export function ChatBar({
     triggerHaptic('selection')
 
     return true
-  }, [activeQueueSessionKey, attachments, clearDraft, draft])
+  }, [activeQueueSessionKey, attachments, clearDraft])
 
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.
@@ -1053,8 +1052,8 @@ export function ChatBar({
       // busy guard for commands that genuinely need an idle session (skill
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
-      if (!attachments.length && SLASH_COMMAND_RE.test(draft.trim())) {
-        const submitted = draft
+      if (!attachments.length && SLASH_COMMAND_RE.test(draftRef.current.trim())) {
+        const submitted = draftRef.current
         triggerHaptic('submit')
         clearDraft()
         void onSubmit(submitted)
@@ -1072,8 +1071,8 @@ export function ChatBar({
       }
     } else if (!hasComposerPayload && queuedPrompts.length > 0) {
       void drainNextQueued()
-    } else if (draft.trim() || attachments.length > 0) {
-      const submitted = draft
+    } else if (draftRef.current.trim() || attachments.length > 0) {
+      const submitted = draftRef.current
       triggerHaptic('submit')
       clearDraft()
       clearComposerAttachments()
@@ -1195,6 +1194,7 @@ export function ChatBar({
       hasComposerPayload={hasComposerPayload}
       onDictate={dictate}
       state={state}
+      submitLabelOverride={submitLabelOverride}
       voiceStatus={voiceStatus}
     />
   )
@@ -1260,7 +1260,7 @@ export function ChatBar({
     <>
       <ComposerPrimitive.Unstable_TriggerPopoverRoot>
         <ComposerPrimitive.Root
-          className={COMPOSER_ABSOLUTE_ROOT_CLASS}
+          className={placement === 'center' ? COMPOSER_CENTER_ROOT_CLASS : COMPOSER_ABSOLUTE_ROOT_CLASS}
           data-drag-active={dragActive ? '' : undefined}
           data-slot="composer-root"
           data-thread-scrolled-up={scrolledUp ? '' : undefined}
@@ -1290,7 +1290,7 @@ export function ChatBar({
               onPick={replaceTriggerWithChip}
             />
           )}
-          <SkinSlashPopover draft={draft} onSelect={selectSkinSlashCommand} />
+          <SkinSlashPopover draft={composerDraft} onSelect={selectSkinSlashCommand} />
           {activeQueueSessionKey && queuedPrompts.length > 0 && (
             <div className="relative z-6 mb-1 px-0.5">
               <QueuePanel
@@ -1345,6 +1345,11 @@ export function ChatBar({
                   <div className="min-w-0 [grid-area:input]">{input}</div>
                   <div className="flex items-center justify-end [grid-area:controls]">{controls}</div>
                 </div>
+                {footerSlot && (
+                  <div className="flex min-w-0 flex-wrap items-center gap-2 border-t border-[color-mix(in_srgb,var(--dt-composer-ring)_14%,transparent)] pt-2 text-[0.72rem] text-muted-foreground">
+                    {footerSlot}
+                  </div>
+                )}
           </ComposerSurface>
         </ComposerPrimitive.Root>
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>

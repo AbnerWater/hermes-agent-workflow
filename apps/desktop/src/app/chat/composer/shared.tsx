@@ -32,6 +32,11 @@ export const COMPOSER_ABSOLUTE_ROOT_CLASS = cn(
   'absolute bottom-0 left-1/2 z-30 -translate-x-1/2'
 )
 
+export const COMPOSER_CENTER_ROOT_CLASS = cn(
+  COMPOSER_ROOT_FRAME_CLASS,
+  'absolute left-1/2 top-1/2 z-30 -translate-x-1/2 -translate-y-1/2'
+)
+
 export interface ComposerSurfaceProps {
   children: ReactNode
   className?: string

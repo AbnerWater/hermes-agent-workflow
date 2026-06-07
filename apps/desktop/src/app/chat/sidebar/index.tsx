@@ -314,12 +314,6 @@ export function ChatSidebar({
         action: 'new-session'
       },
       {
-        id: 'workflows',
-        label: copy.workflow.workflowSidebarLabel,
-        icon: props => <Codicon name="graph" {...props} />,
-        route: `${WORKFLOWS_ROUTE}?new=1`
-      },
-      {
         id: 'skills',
         label: copy.common.skillsAndTools,
         icon: props => <Codicon name="symbol-misc" {...props} />,
@@ -741,7 +735,6 @@ export function ChatSidebar({
 
                 const active =
                   (item.id === 'new-session' && currentView === 'chat') ||
-                  (item.id === 'workflows' && currentView === 'workflows') ||
                   (item.id === 'skills' && currentView === 'skills') ||
                   (item.id === 'messaging' && currentView === 'messaging') ||
                   (item.id === 'artifacts' && currentView === 'artifacts')
@@ -769,7 +762,7 @@ export function ChatSidebar({
                           $newChatProfile.set(null)
                         }
 
-                        onNavigate(item.id === 'workflows' ? { ...item, label } : item)
+                        onNavigate(item)
                       }}
                       tooltip={label}
                       type="button"

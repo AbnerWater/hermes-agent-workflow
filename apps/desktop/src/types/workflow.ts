@@ -274,7 +274,7 @@ export interface WorkflowIntakeResponse {
 
 export interface WorkflowIntakePayload {
   goal?: string
-  name: string
+  name?: string
   references?: string[]
   root?: string
 }

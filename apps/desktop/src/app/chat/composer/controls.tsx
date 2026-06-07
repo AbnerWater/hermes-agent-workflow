@@ -43,6 +43,7 @@ export function ComposerControls({
   disabled,
   hasComposerPayload,
   state,
+  submitLabelOverride,
   voiceStatus,
   onDictate
 }: {
@@ -53,6 +54,7 @@ export function ComposerControls({
   disabled: boolean
   hasComposerPayload: boolean
   state: ChatBarState
+  submitLabelOverride?: string
   voiceStatus: VoiceStatus
   onDictate: () => void
 }) {
@@ -63,6 +65,7 @@ export function ComposerControls({
   }
 
   const showVoicePrimary = !busy && !hasComposerPayload
+  const submitLabel = submitLabelOverride || copy.chat.send
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
@@ -84,9 +87,9 @@ export function ComposerControls({
           </Button>
         </Tip>
       ) : (
-        <Tip label={busy ? (busyAction === 'queue' ? copy.chat.queueMessage : copy.chat.stop) : copy.chat.send}>
+        <Tip label={busy ? (busyAction === 'queue' ? copy.chat.queueMessage : copy.chat.stop) : submitLabel}>
           <Button
-            aria-label={busy ? (busyAction === 'queue' ? copy.chat.queueMessage : copy.chat.stop) : copy.chat.send}
+            aria-label={busy ? (busyAction === 'queue' ? copy.chat.queueMessage : copy.chat.stop) : submitLabel}
             className={PRIMARY_ICON_BTN}
             disabled={disabled || !canSubmit}
             type="submit"
