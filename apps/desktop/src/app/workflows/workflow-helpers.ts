@@ -1,4 +1,14 @@
-import type { ProjectBundle, ReviewRules, StreamEvent, VersionSnapshot, Workflow, WorkflowNode } from '@/types/workflow'
+import type {
+  ProjectBundle,
+  PromptCalibration,
+  RepairContext,
+  ReviewDecision,
+  ReviewRules,
+  StreamEvent,
+  VersionSnapshot,
+  Workflow,
+  WorkflowNode
+} from '@/types/workflow'
 
 const FOLLOWABLE_RUN_STATUSES = new Set(['running', 'waiting_user_confirm', 'paused'])
 const RUNTIME_EVENT_TYPES = new Set<StreamEvent['type']>(['node_status', 'approval'])
@@ -98,4 +108,136 @@ export function isSnapshotDetailApiReady(snapshotApiVersion: null | number | und
 
 export function canRestoreWorkflowSnapshot(activeRun: ProjectBundle['latestRun']): boolean {
   return !activeRun || !SNAPSHOT_RESTORE_BLOCKING_STATUSES.has(activeRun.status)
+}
+
+export function nextExpandedSnapshotCommit(
+  currentCommit: string | null,
+  snapshots: Array<Pick<VersionSnapshot, 'commit'>>
+): string | null {
+  if (!currentCommit) {
+    return null
+  }
+
+  return snapshots.some(snapshot => snapshot.commit === currentCommit) ? currentCommit : null
+}
+
+export function toggleExpandedSnapshotCommit(currentCommit: string | null, commit: string | null | undefined): string | null {
+  if (!commit) {
+    return currentCommit
+  }
+
+  return currentCommit === commit ? null : commit
+}
+
+export function workflowComposerHasContent(text: string, attachmentCount: number): boolean {
+  return text.trim().length > 0 || attachmentCount > 0
+}
+
+export function workflowComposerCanSubmit(
+  text: string,
+  attachmentCount: number,
+  composing: boolean,
+  disabled: boolean
+): boolean {
+  return !disabled && !composing && workflowComposerHasContent(text, attachmentCount)
+}
+
+export function parseReviewDecision(value: unknown): ReviewDecision | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const data = value as Record<string, unknown>
+  const rawDecision = typeof data.decision === 'string' ? data.decision : ''
+
+  if (rawDecision !== 'pass' && rawDecision !== 'return' && rawDecision !== 'needs_human') {
+    return null
+  }
+
+  return {
+    decision: rawDecision,
+    targetNodeId: typeof data.targetNodeId === 'string' ? data.targetNodeId : null,
+    reason: typeof data.reason === 'string' ? data.reason : ''
+  }
+}
+
+export function parsePromptCalibration(value: unknown): PromptCalibration | null {
+  if (!value || typeof value !== 'object') {
+    return null
+  }
+
+  const data = value as Record<string, unknown>
+  return {
+    updatedPromptOverride: typeof data.updatedPromptOverride === 'string' ? data.updatedPromptOverride : undefined,
+    repairObjectives: stringArray(data.repairObjectives),
+    mustFixItems: stringArray(data.mustFixItems),
+    evidenceToCheck: stringArray(data.evidenceToCheck),
+    createdAt: typeof data.createdAt === 'number' ? data.createdAt : undefined,
+    error: typeof data.error === 'string' ? data.error : null
+  }
+}
+
+export function latestRepairContext(outputs: Record<string, unknown> | undefined): RepairContext | null {
+  if (!outputs) {
+    return null
+  }
+
+  return (
+    parseRepairContext(outputs.pendingRepairContext) ??
+    parseRepairContext(outputs.inheritedRepairContext) ??
+    latestRepairContextFromHistory(outputs.repairContextHistory)
+  )
+}
+
+function latestRepairContextFromHistory(value: unknown): RepairContext | null {
+  if (!Array.isArray(value)) {
+    return null
+  }
+
+  for (const item of [...value].reverse()) {
+    const parsed = parseRepairContext(item)
+    if (parsed) {
+      return parsed
+    }
+  }
+
+  return null
+}
+
+function parseRepairContext(value: unknown): RepairContext | null {
+  const source = Array.isArray(value) ? value[0] : value
+
+  if (!source || typeof source !== 'object') {
+    return null
+  }
+
+  const data = source as Record<string, unknown>
+  const id = typeof data.id === 'string' ? data.id : ''
+  const sourceNodeId = typeof data.sourceNodeId === 'string' ? data.sourceNodeId : ''
+  const targetNodeId = typeof data.targetNodeId === 'string' ? data.targetNodeId : ''
+
+  if (!sourceNodeId || !targetNodeId) {
+    return null
+  }
+
+  return {
+    id,
+    sourceNodeId,
+    sourceNodeTitle: typeof data.sourceNodeTitle === 'string' ? data.sourceNodeTitle : undefined,
+    sourceNodeType: typeof data.sourceNodeType === 'string' ? data.sourceNodeType : undefined,
+    targetNodeId,
+    targetNodeTitle: typeof data.targetNodeTitle === 'string' ? data.targetNodeTitle : undefined,
+    reason: typeof data.reason === 'string' ? data.reason : undefined,
+    reviewDecision: parseReviewDecision(data.reviewDecision) ?? undefined,
+    reviewSummary: typeof data.reviewSummary === 'string' ? data.reviewSummary : undefined,
+    resetNodeIds: stringArray(data.resetNodeIds),
+    calibration: parsePromptCalibration(data.calibration),
+    inherited: data.inherited === true,
+    createdAt: typeof data.createdAt === 'number' ? data.createdAt : undefined,
+    consumedAt: typeof data.consumedAt === 'number' ? data.consumedAt : null
+  }
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.length > 0) : []
 }

@@ -42,6 +42,32 @@ export interface ReviewDecision {
   reason?: string
 }
 
+export interface PromptCalibration {
+  updatedPromptOverride?: string
+  repairObjectives?: string[]
+  mustFixItems?: string[]
+  evidenceToCheck?: string[]
+  createdAt?: number
+  error?: string | null
+}
+
+export interface RepairContext {
+  id: string
+  sourceNodeId: string
+  sourceNodeTitle?: string
+  sourceNodeType?: string
+  targetNodeId: string
+  targetNodeTitle?: string
+  reason?: string
+  reviewDecision?: ReviewDecision
+  reviewSummary?: string
+  resetNodeIds?: string[]
+  calibration?: PromptCalibration | null
+  inherited?: boolean
+  createdAt?: number
+  consumedAt?: number | null
+}
+
 export interface WorkflowNode {
   id: string
   type: string

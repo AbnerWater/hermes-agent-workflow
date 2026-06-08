@@ -3,6 +3,7 @@ import json
 import sys
 import types
 import zipfile
+from pathlib import Path
 
 
 class FakeWorkflowAgentRunner:
@@ -448,6 +449,36 @@ def test_workflow_snapshot_detail_lists_git_changes(tmp_path, monkeypatch):
     assert any("Snapshot detail updated" in change.diff for change in detail.files)
 
 
+def test_workflow_file_tree_lists_full_project_except_git(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+    from hermes_cli import workflow_api as wf
+
+    project = wf._create_project(wf.ProjectCreateRequest(name="File Tree", root=str(tmp_path / "file-tree")))
+    root = Path(project.root)
+    deep_file = root / "custom" / "deep" / "a" / "b" / "c" / "file.txt"
+    deep_file.parent.mkdir(parents=True)
+    deep_file.write_text("deep", encoding="utf-8")
+    hidden_file = root / ".project-note"
+    hidden_file.write_text("visible hidden file", encoding="utf-8")
+    git_file = root / ".git" / "internal.txt"
+    git_file.write_text("git internals", encoding="utf-8")
+
+    def flatten(nodes):
+        paths = []
+        for node in nodes:
+            paths.append(Path(node["path"]).resolve())
+            paths.extend(flatten(node.get("children", [])))
+        return paths
+
+    tree_paths = flatten(wf._file_tree(root))
+
+    assert deep_file.resolve() in tree_paths
+    assert hidden_file.resolve() in tree_paths
+    assert git_file.resolve() not in tree_paths
+    assert all(".git" not in path.parts for path in tree_paths)
+
+
 def test_workflow_snapshot_restore_blocks_active_run(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
 
@@ -478,6 +509,7 @@ def test_workflow_snapshot_restore_uses_single_overwritten_backup_branch(tmp_pat
     project = wf._create_project(wf.ProjectCreateRequest(name="Rollback Backup", root=str(tmp_path / "rollback-backup")))
     wf._register_project(project)
     target = wf._create_snapshot(project, "Project initialized", "project_init")
+    target_head = wf._git(project.root, "rev-parse", "HEAD").strip()
 
     workflow = wf._load_workflow(project)
     workflow.title = "First dirty state"
@@ -487,12 +519,14 @@ def test_workflow_snapshot_restore_uses_single_overwritten_backup_branch(tmp_pat
     assert first_backup
     assert first_bundle.rollbackBackupCommit == first_backup
     assert wf._git(project.root, "rev-parse", "--verify", f"{wf.ROLLBACK_BACKUP_BRANCH}^{{commit}}") == first_backup
+    assert wf._git(project.root, "rev-parse", "HEAD").strip() == target_head
     assert wf._load_workflow(project).title != "First dirty state"
+    assert "First dirty state" in wf._git(project.root, "show", f"{first_backup}:.agent-workflow/workflow.flow.json")
 
     workflow = wf._load_workflow(project)
     workflow.title = "Second committed state"
     wf._save_workflow(project, workflow)
-    wf._create_snapshot(project, "Second committed state", "workflow_edit")
+    second_snapshot = wf._create_snapshot(project, "Second committed state", "workflow_edit")
     workflow = wf._load_workflow(project)
     workflow.title = "Second dirty state"
     wf._save_workflow(project, workflow)
@@ -504,7 +538,12 @@ def test_workflow_snapshot_restore_uses_single_overwritten_backup_branch(tmp_pat
     assert second_bundle.rollbackBackupCommit == second_backup
     assert wf._git(project.root, "rev-parse", "--verify", f"{wf.ROLLBACK_BACKUP_BRANCH}^{{commit}}") == second_backup
     assert wf._git(project.root, "branch", "--list", wf.ROLLBACK_BACKUP_BRANCH).strip()
-    assert wf._list_snapshots(project)[0].label.startswith("Rollback to ")
+    assert wf._git(project.root, "rev-parse", "HEAD").strip() == target_head
+    assert "Second dirty state" in wf._git(project.root, "show", f"{second_backup}:.agent-workflow/workflow.flow.json")
+    snapshots_after_restore = wf._list_snapshots(project)
+    assert snapshots_after_restore[0].commit == target.commit
+    assert second_snapshot.commit not in {snapshot.commit for snapshot in snapshots_after_restore}
+    assert all(not snapshot.label.startswith("Rollback to ") for snapshot in snapshots_after_restore)
 
 
 def test_workflow_auto_review_pass_and_return_decisions(tmp_path, monkeypatch):
@@ -525,6 +564,11 @@ def test_workflow_auto_review_pass_and_return_decisions(tmp_path, monkeypatch):
             )
             if "Independent workflow review" in prompt:
                 return wf.WorkflowAgentResult(session_id=session_id, text=self.text)
+            if "Calibrate workflow node repair prompt" in prompt:
+                return wf.WorkflowAgentResult(
+                    session_id=session_id,
+                    text='<workflow_prompt_calibration>{"updatedPromptOverride":"Fix the returned review gap before continuing.","repairObjectives":["Close review gap"],"mustFixItems":["Coverage gap."],"evidenceToCheck":["review artifact"]}</workflow_prompt_calibration>',
+                )
             return wf.WorkflowAgentResult(session_id=session_id, text="Node execution completed.")
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -558,9 +602,16 @@ def test_workflow_auto_review_pass_and_return_decisions(tmp_path, monkeypatch):
     return_by_id = {node.id: node for node in wf._load_workflow(return_project).nodes}
     assert return_by_id["plan"].status == "ready"
     assert return_by_id["plan"].retryCount == 1
+    assert return_by_id["plan"].promptOverride == "Fix the returned review gap before continuing."
+    assert return_by_id["plan"].outputs["pendingRepairContext"]["reviewDecision"]["reason"] == "Coverage gap."
+    assert return_by_id["implement"].outputs["inheritedRepairContext"]["sourceNodeId"] == "review"
     assert return_by_id["implement"].status == "revision_needed"
     assert return_by_id["review"].status == "revision_needed"
     assert any(call["session_id"].startswith("workflow-review-") for call in return_runner.calls)
+    assert any(call["session_id"].startswith("workflow-calibration-") for call in return_runner.calls)
+    rework_prompt = wf._node_execution_prompt(return_project, wf._load_workflow(return_project), wf._load_run(return_run.id), return_by_id["plan"])
+    assert "Revision / Repair Context JSON" in rework_prompt
+    assert "Coverage gap." in rework_prompt
 
 
 def test_workflow_ready_nodes_follow_success_topology():
@@ -592,6 +643,7 @@ def test_task_review_retry_happens_inside_node_before_progressing(tmp_path, monk
     class TaskReviewRunner:
         def __init__(self):
             self.execution_prompts = []
+            self.calibration_prompts = []
             self.review_calls = 0
 
         def run(self, *, prompt, session_id, **kwargs):
@@ -605,6 +657,12 @@ def test_task_review_retry_happens_inside_node_before_progressing(tmp_path, monk
                 return wf.WorkflowAgentResult(
                     session_id=session_id,
                     text='<workflow_review_decision>{"decision":"pass","targetNodeId":null,"reason":"Evidence added."}</workflow_review_decision>',
+                )
+            if "Calibrate workflow node repair prompt" in prompt:
+                self.calibration_prompts.append(prompt)
+                return wf.WorkflowAgentResult(
+                    session_id=session_id,
+                    text='<workflow_prompt_calibration>{"updatedPromptOverride":"Re-run task and add missing evidence before finalizing.","repairObjectives":["Add evidence"],"mustFixItems":["Add missing evidence."],"evidenceToCheck":["artifact summary"]}</workflow_prompt_calibration>',
                 )
             self.execution_prompts.append(prompt)
             return wf.WorkflowAgentResult(session_id=session_id, text=f"Execution attempt {len(self.execution_prompts)} complete.")
@@ -644,9 +702,74 @@ def test_task_review_retry_happens_inside_node_before_progressing(tmp_path, monk
     assert by_id["task"].retryCount == 1
     assert by_id["task"].outputs["executionAttempt"] == 2
     assert by_id["task"].outputs["reviewDecision"]["decision"] == "pass"
+    assert by_id["task"].promptOverride == "Re-run task and add missing evidence before finalizing."
+    assert "pendingRepairContext" not in by_id["task"].outputs
+    assert by_id["task"].outputs["repairContextHistory"][0]["reviewDecision"]["reason"] == "Add missing evidence."
     assert by_id["next"].status == "ready"
     assert len(runner.execution_prompts) == 2
+    assert len(runner.calibration_prompts) == 1
     assert "Previous independent review feedback JSON" in runner.execution_prompts[1]
+    assert "Revision / Repair Context JSON" in runner.execution_prompts[1]
+    assert "Add missing evidence." in runner.execution_prompts[1]
+
+
+def test_prompt_calibration_failure_still_injects_repair_context(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+    from hermes_cli import workflow_api as wf
+
+    class BrokenCalibrationRunner:
+        def __init__(self):
+            self.execution_prompts = []
+            self.review_calls = 0
+
+        def run(self, *, prompt, session_id, **_kwargs):
+            if "Independent workflow review" in prompt:
+                self.review_calls += 1
+                decision = "return" if self.review_calls == 1 else "pass"
+                reason = "Still missing validation evidence." if decision == "return" else "Validation evidence added."
+                return wf.WorkflowAgentResult(
+                    session_id=session_id,
+                    text=f'<workflow_review_decision>{{"decision":"{decision}","targetNodeId":null,"reason":"{reason}"}}</workflow_review_decision>',
+                )
+            if "Calibrate workflow node repair prompt" in prompt:
+                return wf.WorkflowAgentResult(session_id=session_id, text="not json")
+            self.execution_prompts.append(prompt)
+            return wf.WorkflowAgentResult(session_id=session_id, text=f"Execution attempt {len(self.execution_prompts)} complete.")
+
+    monkeypatch.setattr(wf, "_git_init", lambda _root: None)
+    monkeypatch.setattr(wf, "_git", _fake_git_for_workflow_tests)
+    runner = BrokenCalibrationRunner()
+    monkeypatch.setattr(wf, "_agent_runner", runner)
+
+    project = wf._create_project(wf.ProjectCreateRequest(name="Calibration Fallback", root=str(tmp_path / "calibration-fallback")))
+    wf._register_project(project)
+    workflow = wf.Workflow(
+        id="wf_calibration_fallback",
+        title="Calibration Fallback",
+        nodes=[
+            wf.WorkflowNode(
+                id="task",
+                type="execution",
+                title="Task",
+                status="ready",
+                maxRetries=1,
+                reviewRules=wf.ReviewRules(required=True, checklist=["validation evidence"]),
+            )
+        ],
+    )
+    wf._save_workflow(project, workflow)
+    run = wf.ExecutionRun(id="run_calibration_fallback", projectId=project.id, mode="auto", status="running")
+    wf._save_run(run)
+
+    wf._execute_node(project, workflow, run, wf._node_by_id(workflow, "task"))
+
+    updated_task = wf._node_by_id(wf._load_workflow(project), "task")
+    assert updated_task.status == "completed"
+    assert updated_task.promptOverride is None
+    assert updated_task.outputs["promptCalibration"]["error"]
+    assert "Revision / Repair Context JSON" in runner.execution_prompts[1]
+    assert "Still missing validation evidence." in runner.execution_prompts[1]
 
 
 def test_task_review_retry_exhaustion_waits_for_user(tmp_path, monkeypatch):

@@ -6,13 +6,20 @@ import {
   applyWorkflowRetryLimit,
   canRestoreWorkflowSnapshot,
   isSnapshotDetailApiReady,
+  latestRepairContext,
   latestWorkflowRuntimeNodeId,
+  nextExpandedSnapshotCommit,
+  parsePromptCalibration,
+  parseReviewDecision,
   reviewRulesFromDraft,
   reviewRulesToDraft,
   runtimeNodeTitle,
   snapshotChangeSummary,
   snapshotHasChangeStats,
-  snapshotShortCommit
+  snapshotShortCommit,
+  toggleExpandedSnapshotCommit,
+  workflowComposerCanSubmit,
+  workflowComposerHasContent
 } from './workflow-helpers'
 
 function node(id: string, maxRetries = 1): WorkflowNode {
@@ -131,5 +138,74 @@ describe('workflow helpers', () => {
     expect(canRestoreWorkflowSnapshot(run({ status: 'completed' }))).toBe(true)
     expect(canRestoreWorkflowSnapshot(run({ status: 'waiting_user_confirm' }))).toBe(false)
     expect(canRestoreWorkflowSnapshot(run({ status: 'paused' }))).toBe(false)
+  })
+
+  it('keeps snapshot rows collapsed until the user expands them', () => {
+    const snapshots = [{ commit: 'commit-a' }, { commit: 'commit-b' }]
+
+    expect(nextExpandedSnapshotCommit(null, snapshots)).toBeNull()
+    expect(nextExpandedSnapshotCommit('commit-a', snapshots)).toBe('commit-a')
+    expect(nextExpandedSnapshotCommit('missing', snapshots)).toBeNull()
+    expect(toggleExpandedSnapshotCommit(null, 'commit-a')).toBe('commit-a')
+    expect(toggleExpandedSnapshotCommit('commit-a', 'commit-a')).toBeNull()
+    expect(toggleExpandedSnapshotCommit('commit-a', 'commit-b')).toBe('commit-b')
+    expect(toggleExpandedSnapshotCommit('commit-a', null)).toBe('commit-a')
+  })
+
+  it('blocks workflow composer submit while IME composition is active', () => {
+    expect(workflowComposerHasContent('  ', 0)).toBe(false)
+    expect(workflowComposerHasContent('  ', 1)).toBe(true)
+    expect(workflowComposerHasContent('中文', 0)).toBe(true)
+    expect(workflowComposerCanSubmit('中文', 0, true, false)).toBe(false)
+    expect(workflowComposerCanSubmit('中文', 0, false, false)).toBe(true)
+    expect(workflowComposerCanSubmit('', 1, false, false)).toBe(true)
+    expect(workflowComposerCanSubmit('中文', 0, false, true)).toBe(false)
+  })
+
+  it('parses repair context and prompt calibration outputs', () => {
+    expect(parseReviewDecision({ decision: 'return', targetNodeId: 'task', reason: 'Fix output' })).toEqual({
+      decision: 'return',
+      targetNodeId: 'task',
+      reason: 'Fix output'
+    })
+    expect(parseReviewDecision({ decision: 'unknown' })).toBeNull()
+    expect(
+      parsePromptCalibration({
+        updatedPromptOverride: 'Repair the task',
+        mustFixItems: ['Fix output'],
+        evidenceToCheck: ['artifact.md']
+      })
+    ).toMatchObject({
+      updatedPromptOverride: 'Repair the task',
+      mustFixItems: ['Fix output'],
+      evidenceToCheck: ['artifact.md']
+    })
+
+    const context = latestRepairContext({
+      pendingRepairContext: {
+        id: 'repair-1',
+        sourceNodeId: 'review',
+        sourceNodeTitle: 'Review',
+        targetNodeId: 'task',
+        reason: 'Coverage gap',
+        reviewDecision: { decision: 'return', targetNodeId: 'task', reason: 'Coverage gap' },
+        calibration: { mustFixItems: ['Add coverage'] }
+      }
+    })
+
+    expect(context?.sourceNodeTitle).toBe('Review')
+    expect(context?.calibration?.mustFixItems).toEqual(['Add coverage'])
+    expect(latestRepairContext({ inheritedRepairContext: { sourceNodeId: 'review', targetNodeId: 'task', inherited: true } })?.inherited).toBe(
+      true
+    )
+    expect(
+      latestRepairContext({
+        repairContextHistory: [
+          { sourceNodeId: 'old', targetNodeId: 'task' },
+          { sourceNodeId: 'new', targetNodeId: 'task', consumedAt: 2 }
+        ]
+      })?.sourceNodeId
+    ).toBe('new')
+    expect(latestRepairContext({ pendingRepairContext: { id: 'invalid' } })).toBeNull()
   })
 })

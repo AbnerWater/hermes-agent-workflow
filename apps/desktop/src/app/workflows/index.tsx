@@ -82,6 +82,7 @@ import type {
   ProjectBundle,
   ProjectListResponse,
   ReferenceItem,
+  RepairContext,
   ReviewDecision,
   SkillBinding,
   SnapshotFileChange,
@@ -108,11 +109,17 @@ import {
   canRestoreWorkflowSnapshot,
   isSnapshotDetailApiReady,
   latestWorkflowRuntimeNodeId,
+  latestRepairContext,
+  nextExpandedSnapshotCommit,
+  parsePromptCalibration,
+  parseReviewDecision,
   reviewRulesFromDraft,
   reviewRulesToDraft,
   runtimeNodeTitle,
   snapshotChangeSummary,
-  snapshotShortCommit
+  snapshotShortCommit,
+  toggleExpandedSnapshotCommit,
+  workflowComposerCanSubmit
 } from './workflow-helpers'
 import { NEW_CHAT_ROUTE } from '../routes'
 
@@ -347,6 +354,12 @@ function WorkflowWorkbench() {
     refetchInterval: drawerMode === 'files' ? 3000 : false
   })
 
+  useEffect(() => {
+    if (activeProjectId && drawerMode === 'files') {
+      void filesQuery.refetch()
+    }
+  }, [activeProjectId, drawerMode, filesQuery.refetch])
+
   const availableSkillsQuery = useQuery({
     queryKey: ['workflow-available-skills'],
     queryFn: getSkills
@@ -364,11 +377,25 @@ function WorkflowWorkbench() {
     refetchInterval: wsHealthy ? false : 1500
   })
 
+  const invalidateWorkflowFiles = useCallback(
+    (projectId = activeProjectId) => {
+      if (projectId) {
+        void queryClient.invalidateQueries({ queryKey: ['workflow-files', projectId] })
+      }
+    },
+    [activeProjectId, queryClient]
+  )
+
   useEffect(() => {
-    if (eventsQuery.data?.events.length) {
-      setStreamEvents(previous => mergeEvents(previous, eventsQuery.data.events))
+    const events = eventsQuery.data?.events ?? []
+
+    if (events.length) {
+      setStreamEvents(previous => mergeEvents(previous, events))
+      if (events.some(workflowEventMayChangeProjectFiles)) {
+        invalidateWorkflowFiles(activeProjectId)
+      }
     }
-  }, [eventsQuery.data])
+  }, [activeProjectId, eventsQuery.data, invalidateWorkflowFiles])
 
   useEffect(() => {
     if (!activeProjectId) {
@@ -404,6 +431,9 @@ function WorkflowWorkbench() {
           try {
             const payload = JSON.parse(String(event.data)) as StreamEvent
             setStreamEvents(previous => mergeEvents(previous, [payload]))
+            if (workflowEventMayChangeProjectFiles(payload)) {
+              invalidateWorkflowFiles(activeProjectId)
+            }
           } catch {
             // Ignore malformed side-channel events; polling remains active on reconnect.
           }
@@ -416,7 +446,7 @@ function WorkflowWorkbench() {
       setWsHealthy(false)
       socket?.close()
     }
-  }, [activeProjectId])
+  }, [activeProjectId, invalidateWorkflowFiles])
 
   const bundle = bundleQuery.data ?? null
   const workflow = bundle?.workflow ?? null
@@ -633,7 +663,10 @@ function WorkflowWorkbench() {
 
   const restoreSnapshotMutation = useMutation({
     mutationFn: (commit: string) => restoreWorkflowSnapshot(activeProjectId!, commit),
-    onSuccess: data => invalidateProject(data.project.id)
+    onSuccess: data => {
+      queryClient.removeQueries({ queryKey: ['workflow-snapshot-detail', data.project.id] })
+      return invalidateProject(data.project.id)
+    }
   })
 
   const onNodesChange = useCallback<OnNodesChange<FlowNode>>(
@@ -1137,6 +1170,7 @@ function FileTreeDrawer({
         <div>
           <h2>{copy.projectFiles}</h2>
           <p>{root ?? copy.noProjectSelected}</p>
+          <small>{copy.projectFilesHint}</small>
         </div>
         <Button
           disabled={!root}
@@ -1497,6 +1531,13 @@ function TaskDetailDrawer({
     failureTargets.find(item => item.node.id === returnTargetId) ?? failureTargets[0] ?? null
 
   const reviewDecision = parseReviewDecision(node.outputs?.reviewDecision)
+  const promptCalibration = parsePromptCalibration(node.outputs?.promptCalibration)
+  const repairContext = latestRepairContext(node.outputs)
+  const promptAutoCalibrated = Boolean(
+    editable.promptOverride &&
+      promptCalibration?.updatedPromptOverride &&
+      editable.promptOverride === promptCalibration.updatedPromptOverride
+  )
 
   const updateDraft = (updates: Partial<WorkflowNode>) => {
     setDraft(current => ({ ...(current ?? node), ...updates }))
@@ -1614,6 +1655,7 @@ function TaskDetailDrawer({
             </div>
           ) : (
             <div className="workflow-prompt-display">
+              {promptAutoCalibrated && <small className="workflow-prompt-display__note">{copy.promptAutoCalibrated}</small>}
               <div className="workflow-prompt-display__text">{effectivePrompt}</div>
               <Button
                 className="workflow-prompt-display__edit"
@@ -1859,6 +1901,7 @@ function TaskDetailDrawer({
           </button>
           {changesOpen && (
             <div className="workflow-file-changes">
+              {repairContext && <RepairContextSummary context={repairContext} workflow={workflow} />}
               {fileChanges.length ? (
                 fileChanges.map(change => {
                   const changeKey = `${change.status}-${change.path}`
@@ -2010,6 +2053,56 @@ function TaskDetailDrawer({
   )
 }
 
+function RepairContextSummary({ context, workflow }: { context: RepairContext; workflow: Workflow | null }) {
+  const copy = useWorkflowCopy()
+  const sourceTitle =
+    workflow?.nodes.find(candidate => candidate.id === context.sourceNodeId)?.title ??
+    context.sourceNodeTitle ??
+    context.sourceNodeId
+  const calibration = context.calibration ?? null
+  const mustFixItems = calibration?.mustFixItems ?? []
+  const evidenceToCheck = calibration?.evidenceToCheck ?? []
+
+  return (
+    <div className="workflow-repair-context">
+      <div className="workflow-repair-context__header">
+        <span>
+          <Codicon name="debug-rerun" size="0.8125rem" />
+          {copy.repairContext}
+        </span>
+        {context.inherited ? <small>{copy.repairContextInherited}</small> : null}
+      </div>
+      <div className="workflow-key-values">
+        <span>{copy.repairContextSource}</span>
+        <strong>{sourceTitle}</strong>
+        <span>{copy.repairContextReason}</span>
+        <strong>{context.reason || context.reviewDecision?.reason || '-'}</strong>
+      </div>
+      {context.reviewSummary ? <p>{context.reviewSummary}</p> : null}
+      {mustFixItems.length ? (
+        <div>
+          <strong>{copy.repairContextMustFix}</strong>
+          <ul>
+            {mustFixItems.map(item => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {evidenceToCheck.length ? (
+        <div>
+          <strong>{copy.repairContextEvidence}</strong>
+          <ul>
+            {evidenceToCheck.map(item => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 function ReferenceDrawer({
   onAddReferences,
   onToggleReference,
@@ -2113,16 +2206,12 @@ function SnapshotDrawer({
   snapshots: VersionSnapshot[]
 }) {
   const copy = useWorkflowCopy()
-  const [expandedCommit, setExpandedCommit] = useState<string | null>(snapshots[0]?.commit ?? null)
+  const [expandedCommit, setExpandedCommit] = useState<string | null>(null)
   const canRestore = canRestoreWorkflowSnapshot(activeRun)
   const snapshotApiReady = isSnapshotDetailApiReady(snapshotApiVersion)
   useEffect(() => {
-    if (expandedCommit && snapshots.some(snapshot => snapshot.commit === expandedCommit)) {
-      return
-    }
-
-    setExpandedCommit(snapshots[0]?.commit ?? null)
-  }, [expandedCommit, snapshots])
+    setExpandedCommit(current => nextExpandedSnapshotCommit(current, snapshots))
+  }, [snapshots])
 
   const snapshotDetailQuery = useQuery({
     enabled: Boolean(snapshotApiReady && projectId && expandedCommit),
@@ -2187,7 +2276,7 @@ function SnapshotDrawer({
                     aria-expanded={expanded}
                     className="workflow-snapshot-row__main"
                     disabled={!snapshot.commit}
-                    onClick={() => setExpandedCommit(current => (current === snapshot.commit ? null : snapshot.commit))}
+                    onClick={() => setExpandedCommit(current => toggleExpandedSnapshotCommit(current, snapshot.commit))}
                     type="button"
                   >
                     <Codicon name={expanded ? 'chevron-down' : 'chevron-right'} size="0.8125rem" />
@@ -2504,6 +2593,8 @@ function WorkflowChatBox({
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState<string[]>([])
   const [completions, setCompletions] = useState<WorkflowComposerCompletionItem[]>([])
+  const [isComposing, setIsComposing] = useState(false)
+  const composingRef = useRef(false)
 
   useEffect(() => {
     if (!projectId || disabled) {
@@ -2531,7 +2622,20 @@ function WorkflowChatBox({
     return () => window.clearTimeout(handle)
   }, [disabled, projectId, projectRoot, text])
 
+  const setComposerComposing = useCallback((nextComposing: boolean) => {
+    composingRef.current = nextComposing
+    setIsComposing(nextComposing)
+  }, [])
+
+  const syncComposerText = useCallback((event: React.FormEvent<HTMLTextAreaElement>) => {
+    setText(event.currentTarget.value)
+  }, [])
+
   const submit = useCallback(() => {
+    if (composingRef.current) {
+      return
+    }
+
     const trimmed = text.trim()
 
     if (!trimmed && attachments.length === 0) {
@@ -2590,9 +2694,20 @@ function WorkflowChatBox({
       )}
       <Textarea
         disabled={disabled}
-        onChange={event => setText(event.target.value)}
+        onChange={syncComposerText}
+        onCompositionEnd={event => {
+          setComposerComposing(false)
+          setText(event.currentTarget.value)
+        }}
+        onCompositionStart={() => setComposerComposing(true)}
+        onInput={syncComposerText}
         onKeyDown={event => {
+          if (composingRef.current || event.nativeEvent.isComposing) {
+            return
+          }
+
           if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+            event.preventDefault()
             event.currentTarget.form?.requestSubmit()
           }
         }}
@@ -2636,7 +2751,11 @@ function WorkflowChatBox({
       >
         <Codicon name="attach" size="0.875rem" />
       </Button>
-      <Button disabled={disabled || (!text.trim() && attachments.length === 0)} size="icon-sm" type="submit">
+      <Button
+        disabled={!workflowComposerCanSubmit(text, attachments.length, isComposing, disabled || !projectId)}
+        size="icon-sm"
+        type="submit"
+      >
         <Codicon name="send" size="0.875rem" />
       </Button>
     </form>
@@ -3600,25 +3719,6 @@ function fileChangeCanPreview(change: WorkflowNode['fileChanges'][number]): bool
   return change.previewable !== false && !change.isBinary && Boolean(change.diff)
 }
 
-function parseReviewDecision(value: unknown): ReviewDecision | null {
-  if (!value || typeof value !== 'object') {
-    return null
-  }
-
-  const data = value as Record<string, unknown>
-  const rawDecision = typeof data.decision === 'string' ? data.decision : ''
-
-  if (rawDecision !== 'pass' && rawDecision !== 'return' && rawDecision !== 'needs_human') {
-    return null
-  }
-
-  return {
-    decision: rawDecision,
-    targetNodeId: typeof data.targetNodeId === 'string' ? data.targetNodeId : null,
-    reason: typeof data.reason === 'string' ? data.reason : ''
-  }
-}
-
 function reviewDecisionLabel(copy: WorkflowCopy, decision: ReviewDecision['decision']): string {
   if (decision === 'pass') {
     return copy.reviewDecisionPass
@@ -3629,6 +3729,16 @@ function reviewDecisionLabel(copy: WorkflowCopy, decision: ReviewDecision['decis
   }
 
   return copy.reviewDecisionNeedsHuman
+}
+
+function workflowEventMayChangeProjectFiles(event: StreamEvent): boolean {
+  return (
+    event.type === 'tool_call' ||
+    event.type === 'stage_result' ||
+    event.type === 'ai_reply' ||
+    event.type === 'node_status' ||
+    event.type === 'snapshot'
+  )
 }
 
 function workflowEventNeedsCue(event: StreamEvent): boolean {

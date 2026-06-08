@@ -100,6 +100,38 @@ class ReviewDecision(BaseModel):
     reason: str = ""
 
 
+class PromptCalibration(BaseModel):
+    updatedPromptOverride: str = ""
+    repairObjectives: List[str] = Field(default_factory=list)
+    mustFixItems: List[str] = Field(default_factory=list)
+    evidenceToCheck: List[str] = Field(default_factory=list)
+    createdAt: float = Field(default_factory=time.time)
+    error: Optional[str] = None
+
+
+class RepairContext(BaseModel):
+    id: str
+    sourceNodeId: str
+    sourceNodeTitle: str
+    sourceNodeType: str = ""
+    targetNodeId: str
+    targetNodeTitle: str
+    reason: str = ""
+    reviewDecision: ReviewDecision = Field(default_factory=ReviewDecision)
+    reviewSummary: str = ""
+    sourceOutputs: Dict[str, Any] = Field(default_factory=dict)
+    sourceArtifacts: List[str] = Field(default_factory=list)
+    sourceFileChanges: List[Dict[str, Any]] = Field(default_factory=list)
+    targetPreviousOutputs: Dict[str, Any] = Field(default_factory=dict)
+    targetPreviousArtifacts: List[str] = Field(default_factory=list)
+    parentOutputs: List[Dict[str, Any]] = Field(default_factory=list)
+    resetNodeIds: List[str] = Field(default_factory=list)
+    calibration: Optional[PromptCalibration] = None
+    inherited: bool = False
+    createdAt: float = Field(default_factory=time.time)
+    consumedAt: Optional[float] = None
+
+
 class WorkflowNode(BaseModel):
     id: str
     type: str = "task"
@@ -1264,7 +1296,7 @@ def create_workflow_router(ws_auth_ok: Callable[[WebSocket], bool]) -> APIRouter
     @router.get("/projects/{project_id}/files")
     async def get_project_files(project_id: str) -> Dict[str, Any]:
         project = _load_project(project_id)
-        return {"tree": _file_tree(Path(project.root), max_depth=3)}
+        return {"tree": _file_tree(Path(project.root))}
 
     return router
 
@@ -1457,7 +1489,9 @@ def _execute_node(project: WorkflowProject, workflow: Workflow, run: ExecutionRu
 
         node.retryCount += 1
         node.status = "retrying"
+        repair_context = _prepare_task_internal_repair_context(project, workflow, run, node, review_decision)
         node.outputs["reviewFeedback"] = review_decision.model_dump()
+        node.outputs["pendingRepairContext"] = repair_context.model_dump()
         _reset_node_for_revision(node)
         _save_workflow(project, workflow)
         _append_node_status(
@@ -1491,6 +1525,7 @@ def _execute_node(project: WorkflowProject, workflow: Workflow, run: ExecutionRu
         return
 
     node.status = "completed"
+    _consume_repair_contexts(node)
     _promote_ready_nodes(workflow)
     _save_workflow(project, workflow)
     _append_node_status(project, run, node, "节点已完成", "下游依赖已重新计算。", status="success")
@@ -3036,6 +3071,7 @@ def _apply_node_confirm(
     node.outputs["confirmedAt"] = time.time()
     if decision:
         node.outputs["reviewDecision"] = decision.model_dump()
+    _consume_repair_contexts(node)
     _promote_ready_nodes(workflow)
     _save_workflow(project, workflow)
     run.status = "running"
@@ -3118,19 +3154,30 @@ def _apply_node_return(
     descendants = _dependency_descendants(workflow, target.id)
     ancestors = _dependency_ancestors(workflow, node.id)
     reset_ids = {target.id, node.id, *(descendants & ancestors)}
-    reset_node_ids: List[str] = []
+    reset_node_ids = [candidate.id for candidate in workflow.nodes if candidate.id in reset_ids]
+    repair_context = _prepare_feedback_repair_context(
+        project,
+        workflow,
+        run,
+        source_node=node,
+        target_node=target,
+        decision=decision,
+        reset_node_ids=reset_node_ids,
+    )
     for candidate in workflow.nodes:
         if candidate.id not in reset_ids:
             continue
         _reset_node_for_revision(candidate)
-        reset_node_ids.append(candidate.id)
         if candidate.id == target.id:
             candidate.status = "ready"
             candidate.retryCount += 1
+            candidate.outputs["pendingRepairContext"] = repair_context.model_dump()
         elif candidate.id == node.id:
             candidate.status = "revision_needed"
         elif candidate.status in {"completed", "waiting_user_confirm", "reviewing", "ready", "created", "revision_needed", "skipped", "failed"}:
             candidate.status = "revision_needed"
+            inherited = repair_context.model_copy(update={"inherited": True})
+            candidate.outputs["inheritedRepairContext"] = inherited.model_dump()
 
     node.outputs.update(
         {
@@ -3163,6 +3210,257 @@ def _apply_node_return(
     _append_node_status(project, run, target, "返工目标已就绪", f"「{target.title}」已重新加入 ready queue。", status="warning")
     _create_snapshot(project, f"Returned {node.title} to {target.title}", "review_return")
     return decision
+
+
+def _prepare_task_internal_repair_context(
+    project: WorkflowProject,
+    workflow: Workflow,
+    run: ExecutionRun,
+    node: WorkflowNode,
+    decision: ReviewDecision,
+) -> RepairContext:
+    context = _build_repair_context(
+        project,
+        workflow,
+        source_node=node,
+        target_node=node,
+        decision=decision,
+        reset_node_ids=[node.id],
+        reason=decision.reason or "Independent task review requested revision.",
+    )
+    calibration = _calibrate_repair_prompt(project, workflow, run, node, context)
+    return context.model_copy(update={"calibration": calibration})
+
+
+def _prepare_feedback_repair_context(
+    project: WorkflowProject,
+    workflow: Workflow,
+    run: ExecutionRun,
+    *,
+    source_node: WorkflowNode,
+    target_node: WorkflowNode,
+    decision: ReviewDecision,
+    reset_node_ids: List[str],
+) -> RepairContext:
+    context = _build_repair_context(
+        project,
+        workflow,
+        source_node=source_node,
+        target_node=target_node,
+        decision=decision,
+        reset_node_ids=reset_node_ids,
+        reason=decision.reason or "Review/test node requested revision.",
+    )
+    calibration = _calibrate_repair_prompt(project, workflow, run, target_node, context)
+    return context.model_copy(update={"calibration": calibration})
+
+
+def _build_repair_context(
+    project: WorkflowProject,
+    workflow: Workflow,
+    *,
+    source_node: WorkflowNode,
+    target_node: WorkflowNode,
+    decision: ReviewDecision,
+    reset_node_ids: List[str],
+    reason: str,
+) -> RepairContext:
+    return RepairContext(
+        id=_new_id("repair"),
+        sourceNodeId=source_node.id,
+        sourceNodeTitle=source_node.title,
+        sourceNodeType=source_node.type,
+        targetNodeId=target_node.id,
+        targetNodeTitle=target_node.title,
+        reason=_truncate_text(reason, 1600),
+        reviewDecision=decision,
+        reviewSummary=_truncate_text(str(source_node.outputs.get("reviewSummary") or ""), 1600),
+        sourceOutputs=_repair_safe_dict(source_node.outputs),
+        sourceArtifacts=list(source_node.artifacts),
+        sourceFileChanges=[change.model_dump() for change in source_node.fileChanges],
+        targetPreviousOutputs=_repair_safe_dict(target_node.outputs),
+        targetPreviousArtifacts=list(target_node.artifacts),
+        parentOutputs=_repair_parent_outputs(workflow, target_node),
+        resetNodeIds=reset_node_ids,
+    )
+
+
+def _repair_parent_outputs(workflow: Workflow, node: WorkflowNode) -> List[Dict[str, Any]]:
+    parents = [_node_by_id(workflow, edge.source) for edge in _incoming_dependencies(workflow, node.id)]
+    return [
+        {
+            "id": parent.id,
+            "title": parent.title,
+            "type": parent.type,
+            "status": parent.status,
+            "outputs": _repair_safe_dict(parent.outputs),
+            "artifacts": list(parent.artifacts),
+            "fileChanges": [change.model_dump() for change in parent.fileChanges],
+        }
+        for parent in parents
+    ]
+
+
+def _repair_safe_dict(value: Dict[str, Any], limit: int = 8000) -> Dict[str, Any]:
+    try:
+        dumped = json.dumps(value or {}, ensure_ascii=False, default=str)
+        if len(dumped) > limit:
+            return {"preview": dumped[:limit] + "…"}
+        loaded = json.loads(dumped)
+        return loaded if isinstance(loaded, dict) else {}
+    except Exception:
+        return {"preview": _truncate_text(str(value), 1200)}
+
+
+def _calibrate_repair_prompt(
+    project: WorkflowProject,
+    workflow: Workflow,
+    run: ExecutionRun,
+    target_node: WorkflowNode,
+    context: RepairContext,
+) -> PromptCalibration:
+    session_id = f"workflow-calibration-{project.id}-{run.id}-{target_node.id}-{context.id}"
+    try:
+        result = _agent_runner.run(
+            project=project,
+            prompt=_prompt_calibration_prompt(project, workflow, target_node, context),
+            session_id=session_id,
+            node=target_node,
+            run=run,
+            system_prompt=_prompt_calibration_system_prompt(project),
+            max_iterations=8,
+            model_override=target_node.modelOverride or target_node.model,
+            message_label=f"Prompt 校准：{target_node.title}",
+            persist_final=False,
+            persist_runtime=False,
+            enabled_toolsets_override=[],
+        )
+        calibration = _prompt_calibration_from_text(result.text)
+    except Exception as exc:
+        calibration = PromptCalibration(error=_truncate_text(str(exc), 1200))
+
+    if calibration.updatedPromptOverride:
+        target_node.promptOverride = calibration.updatedPromptOverride
+    target_node.outputs["promptCalibration"] = calibration.model_dump()
+
+    if calibration.error:
+        _append_node_status(
+            project,
+            run,
+            target_node,
+            "返工 Prompt 校准未完成",
+            "校准模型未返回有效结构化结果，将直接使用原始审查上下文重跑。",
+            status="warning",
+        )
+    else:
+        _append_node_status(
+            project,
+            run,
+            target_node,
+            "返工 Prompt 已校准",
+            "已根据审查/测试反馈更新当前节点的执行 promptOverride。",
+            status="success",
+        )
+    return calibration
+
+
+def _prompt_calibration_system_prompt(project: WorkflowProject) -> str:
+    return (
+        "You calibrate execution prompts for Hermes Workflow repair loops. "
+        "Do not edit files, do not call tools, and do not ask for hidden reasoning. "
+        "Return only the requested JSON object. "
+        f"The project root is {project.root}."
+    )
+
+
+def _prompt_calibration_prompt(
+    project: WorkflowProject,
+    workflow: Workflow,
+    target_node: WorkflowNode,
+    context: RepairContext,
+) -> str:
+    return "\n".join(
+        [
+            "Calibrate workflow node repair prompt.",
+            "Use the failed review/test result, prior artifacts, file changes, parent outputs, and target node history.",
+            "Return a concrete execution prompt override that tells the target node exactly what to fix on its next run.",
+            "",
+            f"Project: {project.name}",
+            f"Project goal:\n{project.goal}",
+            f"Workflow: {workflow.title}",
+            f"Target node JSON:\n{json.dumps(target_node.model_dump(), ensure_ascii=False, indent=2)}",
+            f"Repair context JSON:\n{json.dumps(context.model_dump(), ensure_ascii=False, indent=2)}",
+            "",
+            "Decision contract:",
+            "- updatedPromptOverride must be a complete, user-editable execution prompt for the target node.",
+            "- repairObjectives should list the main repair goals.",
+            "- mustFixItems should list concrete failed checks or missing work.",
+            "- evidenceToCheck should list artifacts/files/results the next execution must inspect or update.",
+            "Respond exactly as: <workflow_prompt_calibration>{\"updatedPromptOverride\":\"...\",\"repairObjectives\":[\"...\"],\"mustFixItems\":[\"...\"],\"evidenceToCheck\":[\"...\"]}</workflow_prompt_calibration>",
+        ]
+    )
+
+
+def _prompt_calibration_from_text(text: str) -> PromptCalibration:
+    cleaned = _strip_reasoning(text)
+    match = re.search(
+        r"<workflow_prompt_calibration>\s*(\{.*?\})\s*</workflow_prompt_calibration>",
+        cleaned,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    data = _extract_json_object(match.group(1) if match else cleaned)
+    return PromptCalibration(
+        updatedPromptOverride=_truncate_text(str(data.get("updatedPromptOverride") or ""), 8000).strip(),
+        repairObjectives=_string_list(data.get("repairObjectives")),
+        mustFixItems=_string_list(data.get("mustFixItems")),
+        evidenceToCheck=_string_list(data.get("evidenceToCheck")),
+    )
+
+
+def _string_list(value: Any, *, limit: int = 12) -> List[str]:
+    if isinstance(value, str):
+        raw_items = [line.strip("-* \t") for line in value.splitlines()]
+    elif isinstance(value, list):
+        raw_items = [str(item).strip() for item in value]
+    else:
+        raw_items = []
+    return [_truncate_text(item, 500) for item in raw_items if item][:limit]
+
+
+def _node_repair_contexts(node: WorkflowNode) -> List[Dict[str, Any]]:
+    contexts: List[Dict[str, Any]] = []
+    for key in ("pendingRepairContext", "inheritedRepairContext"):
+        value = node.outputs.get(key)
+        if not value:
+            continue
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            if isinstance(item, dict):
+                contexts.append(item)
+    return contexts
+
+
+def _consume_repair_contexts(node: WorkflowNode) -> None:
+    consumed: List[Dict[str, Any]] = []
+    now = time.time()
+    for key in ("pendingRepairContext", "inheritedRepairContext"):
+        value = node.outputs.pop(key, None)
+        if not value:
+            continue
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            if not isinstance(item, dict):
+                continue
+            consumed_item = dict(item)
+            consumed_item["consumedAt"] = now
+            consumed_item["consumedByNodeId"] = node.id
+            consumed.append(consumed_item)
+    if not consumed:
+        return
+    history = node.outputs.get("repairContextHistory")
+    if not isinstance(history, list):
+        history = []
+    node.outputs["repairContextHistory"] = [*history, *consumed][-10:]
 
 
 def _review_decision_from_text(
@@ -3407,6 +3705,7 @@ def _node_execution_prompt(
         }
         for parent in parents
     ]
+    repair_contexts = _node_repair_contexts(node)
     parts = [
         "Execute this workflow node and return a concise final result suitable for the workflow Stream panel.",
         "If you create files, put them below artifacts/ or outputs/ and mention their paths.",
@@ -3421,13 +3720,30 @@ def _node_execution_prompt(
         "",
         f"Current node JSON:\n{json.dumps(node.model_dump(), ensure_ascii=False, indent=2)}",
         f"Editable task prompt override:\n{node.promptOverride.strip() if node.promptOverride else 'None'}",
-        f"Parent outputs JSON:\n{json.dumps(parent_outputs, ensure_ascii=False, indent=2)}",
-        f"Enabled references JSON:\n{json.dumps(enabled_refs, ensure_ascii=False, indent=2)}",
-        f"Node selected references JSON:\n{json.dumps(selected_refs, ensure_ascii=False, indent=2)}",
-        f"Enabled skills JSON:\n{json.dumps(enabled_skills, ensure_ascii=False, indent=2)}",
-        f"Effective model override: {node.modelOverride or node.model or 'global/default'}",
-        f"Failure output targets JSON:\n{json.dumps(feedback_targets, ensure_ascii=False, indent=2)}",
     ]
+    if repair_contexts:
+        parts.extend(
+            [
+                "",
+                "Revision / Repair Context JSON:",
+                json.dumps(repair_contexts, ensure_ascii=False, indent=2),
+                "High priority repair instructions:",
+                "- Treat pendingRepairContext/inheritedRepairContext as required context for this execution.",
+                "- Resolve every mustFixItems entry from promptCalibration when present.",
+                "- Re-check referenced artifacts, file changes, prior outputs, and review/test failure reasons before writing final output.",
+                "- In the final result, explicitly summarize how this run closes the review/test feedback loop.",
+            ]
+        )
+    parts.extend(
+        [
+            f"Parent outputs JSON:\n{json.dumps(parent_outputs, ensure_ascii=False, indent=2)}",
+            f"Enabled references JSON:\n{json.dumps(enabled_refs, ensure_ascii=False, indent=2)}",
+            f"Node selected references JSON:\n{json.dumps(selected_refs, ensure_ascii=False, indent=2)}",
+            f"Enabled skills JSON:\n{json.dumps(enabled_skills, ensure_ascii=False, indent=2)}",
+            f"Effective model override: {node.modelOverride or node.model or 'global/default'}",
+            f"Failure output targets JSON:\n{json.dumps(feedback_targets, ensure_ascii=False, indent=2)}",
+        ]
+    )
     if review_feedback:
         parts.extend(
             [
@@ -4331,7 +4647,8 @@ def _restore_snapshot(project: WorkflowProject, commit: str) -> ProjectBundle:
     if not backup_snapshot.commit:
         raise HTTPException(status_code=500, detail="Unable to create pre-rollback backup snapshot")
     _git(project.root, "branch", "-f", ROLLBACK_BACKUP_BRANCH, backup_snapshot.commit)
-    restored_paths = _restore_snapshot_paths(project, target_commit)
+    restored_paths = _snapshot_restored_paths(project, target_commit)
+    _git(project.root, "reset", "--hard", target_commit)
     restored_project = _load_project(project.id)
     normalized_run = _normalize_restored_run_state(restored_project)
     _append_event(
@@ -4353,7 +4670,6 @@ def _restore_snapshot(project: WorkflowProject, commit: str) -> ProjectBundle:
             status="warning",
         ),
     )
-    _create_snapshot(restored_project, f"Rollback to {target_commit[:8]}", "rollback_restore")
     return _project_bundle(restored_project.id)
 
 
@@ -4382,6 +4698,11 @@ def _restore_snapshot_paths(project: WorkflowProject, commit: str) -> List[str]:
         _checkout_snapshot_file_with_retries(project, commit, rel_file)
     for rel_path in SNAPSHOT_MANAGED_PATHS:
         (root / rel_path).mkdir(parents=True, exist_ok=True)
+    return [path for path in SNAPSHOT_MANAGED_PATHS if any(file == path or file.startswith(f"{path}/") for file in target_files)]
+
+
+def _snapshot_restored_paths(project: WorkflowProject, commit: str) -> List[str]:
+    target_files = _snapshot_tracked_files(project, commit)
     return [path for path in SNAPSHOT_MANAGED_PATHS if any(file == path or file.startswith(f"{path}/") for file in target_files)]
 
 
@@ -4661,27 +4982,28 @@ def _is_artifact_path(path: str) -> bool:
     return path.startswith("artifacts/") or path.startswith("outputs/")
 
 
-def _file_tree(root: Path, *, max_depth: int, depth: int = 0) -> List[Dict[str, Any]]:
-    if depth > max_depth or not root.exists():
+def _file_tree(root: Path) -> List[Dict[str, Any]]:
+    if not root.exists():
         return []
     children: List[Dict[str, Any]] = []
-    allowed_top = {"references", "memory", "workflow", "artifacts", "outputs", "logs", WORKFLOW_DIR}
     try:
         entries = sorted(root.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
     except OSError:
         return children
     for entry in entries:
-        if depth == 0 and entry.name not in allowed_top:
-            continue
         if entry.name == ".git":
+            continue
+        try:
+            is_directory = entry.is_dir()
+        except OSError:
             continue
         item: Dict[str, Any] = {
             "name": entry.name,
             "path": str(entry),
-            "kind": "folder" if entry.is_dir() else "file",
+            "kind": "folder" if is_directory else "file",
         }
-        if entry.is_dir():
-            item["children"] = _file_tree(entry, max_depth=max_depth, depth=depth + 1)
+        if is_directory and not entry.is_symlink():
+            item["children"] = _file_tree(entry)
         children.append(item)
     return children
 

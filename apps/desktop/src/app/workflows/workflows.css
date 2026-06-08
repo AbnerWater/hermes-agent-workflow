@@ -1075,6 +1075,14 @@
   white-space: pre-wrap;
 }
 
+.workflow-prompt-display__note {
+  display: block;
+  border-bottom: 1px solid var(--ui-stroke-quaternary);
+  padding: 0.375rem 0.75rem;
+  color: var(--ui-text-tertiary);
+  font-size: 0.6875rem;
+}
+
 .workflow-prompt-display__edit {
   position: absolute;
   right: 0.5rem;
@@ -1152,6 +1160,46 @@
 .workflow-config-list,
 .workflow-file-changes {
   padding: 0.5rem 0 0;
+}
+
+.workflow-repair-context {
+  display: grid;
+  gap: 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--ui-warning, #d78b00) 34%, var(--ui-stroke-quaternary));
+  border-radius: 0.375rem;
+  background: color-mix(in srgb, var(--ui-warning, #d78b00) 8%, var(--ui-bg-card));
+  padding: 0.625rem;
+}
+
+.workflow-repair-context__header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--ui-text-primary);
+  font-size: 0.75rem;
+  font-weight: 650;
+}
+
+.workflow-repair-context__header span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.workflow-repair-context__header small {
+  color: var(--ui-text-tertiary);
+  font-size: 0.6875rem;
+  font-weight: 500;
+}
+
+.workflow-repair-context ul {
+  margin: 0.25rem 0 0;
+  padding-left: 1rem;
+  color: var(--ui-text-secondary);
+  font-size: 0.75rem;
 }
 
 .workflow-artifact-row,
