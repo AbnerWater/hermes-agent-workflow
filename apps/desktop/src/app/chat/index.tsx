@@ -5,30 +5,19 @@ import {
   type ThreadMessage
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 
-import { WorkflowClarificationPanel, WorkflowDraftPreviewDialog } from '@/app/workflows'
-import { applyWorkflowProjectChange, dispatchWorkflowProjectsChanged } from '@/app/workflows/project-events'
 import { type WorkflowCopy, workflowCopyFor } from '@/app/workflows/i18n'
 import { Thread } from '@/components/assistant-ui/thread'
 import { Backdrop } from '@/components/Backdrop'
-import { CompactMarkdown } from '@/components/chat/compact-markdown'
-import { WordmarkIntro } from '@/components/chat/intro'
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
-import {
-  confirmWorkflowIntake,
-  getGlobalModelOptions,
-  sendWorkflowIntakeMessage,
-  startWorkflowIntake,
-  submitWorkflowIntakeAnswers,
-  type HermesGateway
-} from '@/hermes'
+import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { quickModelOptions, sessionTitle, toRuntimeMessage } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
@@ -55,18 +44,8 @@ import {
 } from '@/store/session'
 import { $workflowLanguage } from '@/store/workflow-language'
 import type { ModelOptionsResponse } from '@/types/hermes'
-import type {
-  ProjectBundle,
-  ProjectListResponse,
-  Workflow,
-  WorkflowIntakeAnswer,
-  WorkflowIntakeBatch,
-  WorkflowIntakeMessage,
-  WorkflowIntakePayload,
-  WorkflowIntakeResponse
-} from '@/types/workflow'
 
-import { NEW_CHAT_ROUTE, routeSessionId, WORKFLOWS_ROUTE } from '../routes'
+import { NEW_CHAT_ROUTE, routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass } from '../shell/titlebar'
 
 import { ChatDropOverlay } from './chat-drop-overlay'
@@ -74,7 +53,7 @@ import { ChatSwapOverlay } from './chat-swap-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
 import { requestComposerInsert, requestComposerInsertRefs } from './composer/focus'
 import { droppedFileInlineRef, type SessionDragPayload, sessionInlineRef } from './composer/inline-refs'
-import type { ChatBarState } from './composer/types'
+import type { ChatBarState, WorkflowPlanningSubmitContext } from './composer/types'
 import type { DroppedFile } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
@@ -98,7 +77,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onRemoveAttachment: (id: string) => void
   onSubmit: (
     text: string,
-    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }
+    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean; workflowPlanning?: WorkflowPlanningSubmitContext }
   ) => Promise<boolean> | boolean
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
   onEdit: (message: AppendMessage) => Promise<void>
@@ -143,39 +122,6 @@ function workflowReferencesFromAttachments(attachments: readonly ComposerAttachm
   }
 
   return refs
-}
-
-function mergeWorkflowReferences(current: string[], incoming: readonly string[]): string[] {
-  const next = [...current]
-  const seen = new Set(next)
-
-  for (const ref of incoming) {
-    const value = ref.trim()
-    if (!value || seen.has(value)) {
-      continue
-    }
-
-    seen.add(value)
-    next.push(value)
-  }
-
-  return next
-}
-
-function workflowErrorText(error: unknown): string | undefined {
-  if (!error) {
-    return undefined
-  }
-
-  if (error instanceof Error) {
-    return error.message
-  }
-
-  if (typeof error === 'string') {
-    return error
-  }
-
-  return undefined
 }
 
 function ChatHeader({
@@ -240,24 +186,20 @@ function WorkflowChatFooter({
   disabled,
   onChooseRoot,
   onEnabledChange,
-  onInitialize,
   onResetRoot,
   root,
-  workflowEnabled,
-  showInitialize
+  workflowEnabled
 }: {
   copy: WorkflowCopy
   disabled: boolean
   onChooseRoot: () => void
   onEnabledChange: (enabled: boolean) => void
-  onInitialize: () => void
   onResetRoot: () => void
   root: string
   workflowEnabled: boolean
-  showInitialize: boolean
 }) {
   return (
-    <div className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-2">
+    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
       <div className="flex min-w-0 flex-wrap items-center gap-2">
         <label className="flex shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-full bg-background/35 px-2 py-1 text-foreground/85">
           <Switch
@@ -295,76 +237,6 @@ function WorkflowChatFooter({
           </div>
         )}
       </div>
-      {workflowEnabled && showInitialize && (
-        <Button className="h-7 rounded-full px-3 text-[0.72rem]" disabled={disabled} onClick={onInitialize} type="button">
-          <Codicon name={disabled ? 'loading' : 'check'} size="0.8125rem" spinning={disabled} />
-          {copy.initializeWorkflow}
-        </Button>
-      )}
-    </div>
-  )
-}
-
-function WorkflowPlanningThread({
-  batch,
-  busy,
-  copy,
-  draftMessageIndex,
-  draftWorkflow,
-  error,
-  messages,
-  onPreview,
-  onSubmitAnswers
-}: {
-  batch: WorkflowIntakeBatch | null
-  busy: boolean
-  copy: WorkflowCopy
-  draftMessageIndex: number
-  draftWorkflow: Workflow | null
-  error?: null | string
-  messages: WorkflowIntakeMessage[]
-  onPreview: () => void
-  onSubmitAnswers: (answers: WorkflowIntakeAnswer[]) => void
-}) {
-  const empty = messages.length === 0 && !busy
-
-  if (empty) {
-    return (
-      <div className="flex h-full min-h-0 w-full items-center justify-center px-4 pb-[var(--composer-measured-height)]">
-        <WordmarkIntro body={copy.workflowIntakeSubtitle} wordmark="HERMES WORKFLOW" />
-      </div>
-    )
-  }
-
-  return (
-    <div className="h-full min-h-0 overflow-y-auto px-4 pb-[calc(var(--composer-measured-height)+2rem)] pt-8">
-      <div className="workflow-intake-transcript mx-auto w-[min(var(--composer-width),calc(100%-2rem))] max-w-full">
-        {messages.map((message, index) => (
-          <div className={cn('workflow-intake-message', message.role === 'user' && 'is-user')} key={`${message.timestamp}-${index}`}>
-            <span>{message.role === 'user' ? copy.you : 'Hermes'}</span>
-            <CompactMarkdown className="workflow-intake-message-markdown" text={message.content || '...'} />
-            {index === draftMessageIndex && draftWorkflow && (
-              <Button className="workflow-intake-message__preview" onClick={onPreview} size="xs" type="button" variant="outline">
-                <Codicon name="preview" size="0.75rem" />
-                {copy.previewWorkflowDraft}
-              </Button>
-            )}
-          </div>
-        ))}
-        {batch?.questions.length ? (
-          <WorkflowClarificationPanel batch={batch} busy={busy} onSubmit={onSubmitAnswers} />
-        ) : null}
-        {busy && (
-          <div className="workflow-intake-message">
-            <span>Hermes</span>
-            <div className="workflow-intake-message-markdown">
-              <Codicon name="loading" size="0.8125rem" spinning />
-              {copy.planningWithHermes}
-            </div>
-          </div>
-        )}
-        {error && <div className="workflow-error workflow-intake-error">{error}</div>}
-      </div>
     </div>
   )
 }
@@ -394,7 +266,6 @@ export function ChatView({
 }: ChatViewProps) {
   const location = useLocation()
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
   const activeSessionId = useStore($activeSessionId)
   const awaitingResponse = useStore($awaitingResponse)
   const busy = useStore($busy)
@@ -415,25 +286,15 @@ export function ChatView({
   const isRoutedSessionView = Boolean(routeSessionId(location.pathname))
   const modeParam = new URLSearchParams(location.search).get('mode')
   const workflowModeRequested = modeParam === WORKFLOW_MODE_PARAM
-  const workflowModeAllowed = !isRoutedSessionView && !selectedSessionId && !activeSessionId
+  const workflowModeAllowed = true
   const [chatMode, setChatMode] = useState<ChatMode>(workflowModeRequested ? 'workflow' : 'session')
   const workflowModeActive = workflowModeAllowed && chatMode === 'workflow'
-  const [workflowIntakeId, setWorkflowIntakeId] = useState<string | null>(null)
-  const [workflowGoal, setWorkflowGoal] = useState('')
   const [workflowRoot, setWorkflowRoot] = useState('')
-  const [workflowReferences, setWorkflowReferences] = useState<string[]>([])
-  const [workflowMessages, setWorkflowMessages] = useState<WorkflowIntakeMessage[]>([])
-  const [workflowPhase, setWorkflowPhase] = useState<WorkflowIntakeResponse['phase']>('idle')
-  const [workflowPlanningStarted, setWorkflowPlanningStarted] = useState(false)
-  const [workflowDraftMarkdown, setWorkflowDraftMarkdown] = useState('')
-  const [workflowDraft, setWorkflowDraft] = useState<Workflow | null>(null)
-  const [workflowBatch, setWorkflowBatch] = useState<WorkflowIntakeBatch | null>(null)
-  const [workflowError, setWorkflowError] = useState<string | null>(null)
-  const [workflowPreviewOpen, setWorkflowPreviewOpen] = useState(false)
-  const [workflowPreviewNodeId, setWorkflowPreviewNodeId] = useState<string | null>(null)
+  const [localComposerSubmitted, setLocalComposerSubmitted] = useState(false)
 
   const showIntro =
     freshDraftReady && !isRoutedSessionView && !selectedSessionId && !activeSessionId && messages.length === 0
+  const showCenteredComposer = showIntro && !localComposerSubmitted
 
   // Session is still loading if the route references a session we haven't
   // resumed yet. Once `activeSessionId` is set (runtime has resumed), the
@@ -489,28 +350,24 @@ export function ChatView({
   )
 
   const resetWorkflowPlanningState = useCallback(() => {
-    setWorkflowIntakeId(null)
-    setWorkflowGoal('')
-    setWorkflowReferences([])
-    setWorkflowMessages([])
-    setWorkflowPhase('idle')
-    setWorkflowPlanningStarted(false)
-    setWorkflowDraftMarkdown('')
-    setWorkflowDraft(null)
-    setWorkflowBatch(null)
-    setWorkflowError(null)
-    setWorkflowPreviewOpen(false)
-    setWorkflowPreviewNodeId(null)
+    setWorkflowRoot('')
   }, [])
 
   useEffect(() => {
-    const nextMode = workflowModeRequested && workflowModeAllowed ? 'workflow' : 'session'
-    setChatMode(current => (current === nextMode ? current : nextMode))
+    if (workflowModeRequested) {
+      setChatMode(current => (current === 'workflow' ? current : 'workflow'))
+      return
+    }
 
-    if (nextMode === 'session') {
+    if (!selectedSessionId && !activeSessionId && !isRoutedSessionView) {
+      setChatMode(current => (current === 'session' ? current : 'session'))
       resetWorkflowPlanningState()
     }
-  }, [resetWorkflowPlanningState, workflowModeAllowed, workflowModeRequested])
+  }, [activeSessionId, isRoutedSessionView, resetWorkflowPlanningState, selectedSessionId, workflowModeRequested])
+
+  useEffect(() => {
+    setLocalComposerSubmitted(false)
+  }, [location.pathname, location.search, selectedSessionId])
 
   const setMode = useCallback(
     (mode: ChatMode) => {
@@ -519,148 +376,13 @@ export function ChatView({
       }
 
       setChatMode(mode)
-      navigate(mode === 'workflow' ? `${NEW_CHAT_ROUTE}?mode=${WORKFLOW_MODE_PARAM}` : NEW_CHAT_ROUTE, {
-        replace: location.pathname === NEW_CHAT_ROUTE
-      })
-    },
-    [location.pathname, navigate, resetWorkflowPlanningState]
-  )
-
-  const applyWorkflowIntakeResponse = useCallback((response: WorkflowIntakeResponse) => {
-    setWorkflowPlanningStarted(true)
-    setWorkflowIntakeId(response.intakeId)
-    setWorkflowMessages(response.messages)
-    setWorkflowError(response.error ?? null)
-    setWorkflowPhase(response.phase ?? (response.canConfirm || response.ready ? 'draft_ready' : 'clarifying'))
-    setWorkflowDraftMarkdown(response.draftMarkdown ?? response.summary ?? '')
-    setWorkflowDraft(response.draftWorkflow ?? null)
-    setWorkflowBatch(response.currentBatch ?? null)
-
-    if (response.draftWorkflow?.nodes.length) {
-      setWorkflowPreviewNodeId(response.draftWorkflow.nodes[0].id)
-    }
-  }, [])
-
-  const workflowDraftReady = Boolean(workflowDraft && (workflowPhase === 'draft_ready' || workflowDraftMarkdown))
-  const workflowTranscriptActive =
-    workflowModeActive && (workflowPlanningStarted || workflowMessages.length > 0 || workflowPhase !== 'idle')
-  const workflowActiveBatch = Boolean(workflowBatch?.questions.length && !workflowDraftReady)
-  const workflowPlaceholderOverride = workflowModeActive
-    ? workflowDraftReady
-      ? workflowCopy.revisionDetailsPlaceholder
-      : workflowTranscriptActive
-        ? workflowCopy.taskPlaceholder
-        : undefined
-    : undefined
-  const workflowDraftMessageIndex = useMemo(() => {
-    if (!workflowDraftReady) {
-      return -1
-    }
-
-    for (let index = workflowMessages.length - 1; index >= 0; index -= 1) {
-      if (workflowMessages[index]?.role === 'assistant') {
-        return index
-      }
-    }
-
-    return -1
-  }, [workflowDraftReady, workflowMessages])
-
-  const startWorkflowPlanningMutation = useMutation({
-    mutationFn: (payload: WorkflowIntakePayload) => startWorkflowIntake(payload),
-    onSuccess: applyWorkflowIntakeResponse
-  })
-
-  const sendWorkflowPlanningMutation = useMutation({
-    mutationFn: ({ message, references }: { message: string; references: string[] }) =>
-      sendWorkflowIntakeMessage(workflowIntakeId!, message, references),
-    onSuccess: applyWorkflowIntakeResponse
-  })
-
-  const submitWorkflowAnswersMutation = useMutation({
-    mutationFn: (answers: WorkflowIntakeAnswer[]) => submitWorkflowIntakeAnswers(workflowIntakeId!, answers),
-    onSuccess: applyWorkflowIntakeResponse
-  })
-
-  const confirmWorkflowPlanningMutation = useMutation({
-    mutationFn: () =>
-      confirmWorkflowIntake(workflowIntakeId!, {
-        goal: workflowGoal,
-        references: workflowReferences,
-        root: workflowRoot || undefined
-      }),
-    onSuccess: async (bundle: ProjectBundle) => {
-      queryClient.setQueryData<ProjectListResponse>(['workflow-projects'], current => ({
-        projects: applyWorkflowProjectChange(current?.projects ?? [], { action: 'created', project: bundle.project })
-      }))
-      dispatchWorkflowProjectsChanged({ action: 'created', project: bundle.project })
-      await queryClient.invalidateQueries({ queryKey: ['workflow-projects'] })
-      navigate(`${WORKFLOWS_ROUTE}?project=${encodeURIComponent(bundle.project.id)}`)
-    }
-  })
-
-  const workflowBusy =
-    startWorkflowPlanningMutation.isPending ||
-    sendWorkflowPlanningMutation.isPending ||
-    submitWorkflowAnswersMutation.isPending ||
-    confirmWorkflowPlanningMutation.isPending
-
-  const workflowMutationError =
-    workflowErrorText(
-      startWorkflowPlanningMutation.error ||
-        sendWorkflowPlanningMutation.error ||
-        submitWorkflowAnswersMutation.error ||
-        confirmWorkflowPlanningMutation.error
-    ) || workflowError
-
-  const submitWorkflowPlanning = useCallback(
-    async (text: string, options?: { attachments?: ComposerAttachment[] }) => {
-      const message = text.trim()
-
-      if (!message || workflowBusy || workflowActiveBatch) {
-        return false
-      }
-
-      const incomingReferences = workflowReferencesFromAttachments(options?.attachments ?? [])
-      const nextReferences = mergeWorkflowReferences(workflowReferences, incomingReferences)
-      setWorkflowReferences(nextReferences)
-      setWorkflowError(null)
-      setWorkflowPlanningStarted(true)
-
-      try {
-        if (!workflowIntakeId) {
-          setWorkflowGoal(message)
-          const response = await startWorkflowPlanningMutation.mutateAsync({
-            goal: message,
-            references: nextReferences,
-            root: workflowRoot || undefined
-          })
-          applyWorkflowIntakeResponse(response)
-        } else {
-          const response = await sendWorkflowPlanningMutation.mutateAsync({
-            message,
-            references: incomingReferences
-          })
-          applyWorkflowIntakeResponse(response)
-        }
-
-        return true
-      } catch (error) {
-        setWorkflowError(workflowErrorText(error) ?? workflowCopy.planningFailed)
-        return false
+      if (!selectedSessionId && !activeSessionId && !isRoutedSessionView) {
+        navigate(mode === 'workflow' ? `${NEW_CHAT_ROUTE}?mode=${WORKFLOW_MODE_PARAM}` : NEW_CHAT_ROUTE, {
+          replace: location.pathname === NEW_CHAT_ROUTE
+        })
       }
     },
-    [
-      applyWorkflowIntakeResponse,
-      sendWorkflowPlanningMutation,
-      startWorkflowPlanningMutation,
-      workflowActiveBatch,
-      workflowBusy,
-      workflowCopy.planningFailed,
-      workflowIntakeId,
-      workflowReferences,
-      workflowRoot
-    ]
+    [activeSessionId, isRoutedSessionView, location.pathname, navigate, resetWorkflowPlanningState, selectedSessionId]
   )
 
   const runtimeMessageRepository = useMemo(() => {
@@ -700,7 +422,7 @@ export function ChatView({
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: runtimeMessageRepository,
-    isRunning: workflowModeActive ? workflowBusy : busy,
+    isRunning: busy,
     setMessages: onThreadMessagesChange,
     onNew: async () => {
       // Submission is handled explicitly by ChatBar.
@@ -758,52 +480,36 @@ export function ChatView({
         {...dropHandlers}
       >
         <AssistantRuntimeProvider runtime={runtime}>
-          {workflowTranscriptActive ? (
-            <WorkflowPlanningThread
-              batch={workflowBatch}
-              busy={workflowBusy}
-              copy={workflowCopy}
-              draftMessageIndex={workflowDraftMessageIndex}
-              draftWorkflow={workflowDraft}
-              error={workflowMutationError}
-              messages={workflowMessages}
-              onPreview={() => setWorkflowPreviewOpen(true)}
-              onSubmitAnswers={answers => submitWorkflowAnswersMutation.mutate(answers)}
-            />
-          ) : (
-            <Thread
-              clampToComposer={showChatBar}
-              cwd={currentCwd}
-              gateway={gateway}
-              intro={showIntro ? { personality: introPersonality, seed: introSeed } : undefined}
-              loading={threadLoading}
-              onBranchInNewChat={onBranchInNewChat}
-              onCancel={onCancel}
-              sessionId={activeSessionId}
-              sessionKey={threadKey}
-            />
-          )}
+          <Thread
+            clampToComposer={showChatBar}
+            cwd={currentCwd}
+            gateway={gateway}
+            intro={showCenteredComposer ? { personality: introPersonality, seed: introSeed } : undefined}
+            loading={threadLoading}
+            onBranchInNewChat={onBranchInNewChat}
+            onCancel={onCancel}
+            sessionId={activeSessionId}
+            sessionKey={threadKey}
+          />
           {showChatBar && (
             <Suspense fallback={<ChatBarFallback />}>
               <ChatBar
-                busy={workflowModeActive ? workflowBusy : busy}
+                busy={busy}
                 cwd={currentCwd}
-                disabled={!gatewayOpen || (workflowModeActive && workflowActiveBatch)}
+                disabled={!gatewayOpen}
                 footerSlot={
                   workflowModeAllowed ? (
                     <WorkflowChatFooter
                       copy={workflowCopy}
-                      disabled={workflowBusy}
+                      disabled={busy}
                       onChooseRoot={() => {
                         void window.hermesDesktop
                           ?.selectPaths({ directories: true, title: workflowCopy.chooseWorkflowProjectDirectory })
                           .then(paths => paths?.[0] && setWorkflowRoot(paths[0]))
                       }}
                       onEnabledChange={enabled => setMode(enabled ? 'workflow' : 'session')}
-                      onInitialize={() => confirmWorkflowPlanningMutation.mutate()}
                       onResetRoot={() => setWorkflowRoot('')}
                       root={workflowRoot}
-                      showInitialize={workflowModeActive && workflowDraftReady && Boolean(workflowIntakeId)}
                       workflowEnabled={workflowModeActive}
                     />
                   ) : null
@@ -821,20 +527,31 @@ export function ChatView({
                 onPickFolders={onPickFolders}
                 onPickImages={onPickImages}
                 onRemoveAttachment={onRemoveAttachment}
-                onSubmit={(text, options) =>
-                  workflowModeActive ? submitWorkflowPlanning(text, options) : onSubmit(text, options)
-                }
+                onSubmit={(text, options) => {
+                  setLocalComposerSubmitted(true)
+                  if (!workflowModeActive) {
+                    return onSubmit(text, options)
+                  }
+
+                  const references = workflowReferencesFromAttachments(options?.attachments ?? [])
+                  return onSubmit(text, {
+                    ...options,
+                    workflowPlanning: {
+                      references,
+                      root: workflowRoot || undefined
+                    }
+                  })
+                }}
                 onTranscribeAudio={onTranscribeAudio}
-                placeholderOverride={workflowPlaceholderOverride}
-                placement={showIntro && !workflowTranscriptActive ? 'center' : 'bottom'}
+                placeholderOverride={workflowModeActive ? workflowCopy.taskPlaceholder : undefined}
+                placement={showCenteredComposer ? 'center' : 'bottom'}
                 queueSessionKey={selectedSessionId || activeSessionId}
                 sessionId={activeSessionId}
                 state={
                   workflowModeActive
                     ? {
                         ...chatBarState,
-                        tools: { ...chatBarState.tools, label: workflowCopy.projectReferences },
-                        voice: { active: false, enabled: false }
+                        tools: { ...chatBarState.tools, label: workflowCopy.projectReferences }
                       }
                     : chatBarState
                 }
@@ -842,13 +559,6 @@ export function ChatView({
               />
             </Suspense>
           )}
-          <WorkflowDraftPreviewDialog
-            onOpenChange={setWorkflowPreviewOpen}
-            onSelectNode={setWorkflowPreviewNodeId}
-            open={workflowPreviewOpen}
-            selectedNodeId={workflowPreviewNodeId}
-            workflow={workflowDraft}
-          />
         </AssistantRuntimeProvider>
         <ChatDropOverlay kind={dragKind} />
         <ChatSwapOverlay profile={gatewaySwapTarget} />

@@ -52,6 +52,8 @@ _HERMES_CORE_TOOLS = [
     "session_search",
     # Clarifying questions
     "clarify",
+    # Workflow planning draft proposal
+    "workflow_draft_propose",
     # Code execution + delegation
     "execute_code", "delegate_task",
     # Cronjob management
@@ -231,6 +233,12 @@ TOOLSETS = {
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
         "tools": ["clarify"],
+        "includes": []
+    },
+
+    "workflow_draft": {
+        "description": "Propose structured Hermes Workflow drafts inside normal chat sessions",
+        "tools": ["workflow_draft_propose"],
         "includes": []
     },
     

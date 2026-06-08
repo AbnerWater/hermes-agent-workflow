@@ -545,6 +545,86 @@ def test_workflow_intake_plans_draft_then_confirms_project(tmp_path, monkeypatch
     assert wf._read_registry()[bundle["project"]["id"]] == bundle["project"]["root"]
 
 
+def test_workflow_project_from_chat_draft_initializes_formal_project(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from hermes_cli import workflow_api as wf
+
+    monkeypatch.setattr(wf, "_git_init", lambda _root: None)
+    monkeypatch.setattr(wf, "_git", lambda _root, *args: "d" * 40 if args[:2] == ("rev-parse", "HEAD") else "")
+
+    app = FastAPI()
+    app.include_router(wf.create_workflow_router(lambda _ws: True))
+    client = TestClient(app)
+
+    before = client.get("/api/workflows/projects")
+    assert before.status_code == 200
+    assert before.json()["projects"] == []
+
+    response = client.post(
+        "/api/workflows/projects/from-draft",
+        json={
+            "sourceSessionId": "session_chat_workflow",
+            "root": str(tmp_path / "chat-draft"),
+            "references": [str(tmp_path / "reference.md")],
+            "draftMarkdown": "# Chat Draft Workflow\n\n- Plan\n- Execute\n- Review",
+            "workflow": {
+                "updatedAt": 1700000000,
+                "nodes": [
+                    {
+                        "type": "planning",
+                        "title": "Plan",
+                        "description": "Plan the work.",
+                        "reviewRules": {"required": False, "checklist": ["scope"]},
+                    },
+                    {
+                        "id": "execute",
+                        "type": "execution",
+                        "title": "Execute",
+                        "description": "Execute the plan.",
+                        "reviewRules": {"required": False, "checklist": ["output"]},
+                    },
+                    {
+                        "id": "review",
+                        "type": "review",
+                        "title": "Review",
+                        "description": "Review the output.",
+                        "reviewRules": {"required": True, "checklist": ["pass"]},
+                    },
+                ],
+                "edges": [
+                    {
+                        "source": "plan",
+                        "target": "execute",
+                    },
+                    {
+                        "source": "execute",
+                        "target": "review",
+                    },
+                    {
+                        "source": "review",
+                        "target": "execute",
+                        "type": "feedback",
+                    },
+                ],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    bundle = response.json()
+    assert bundle["project"]["name"] == "Chat Draft Workflow"
+    assert bundle["project"]["status"] == "generated"
+    assert bundle["workflow"]["title"] == "Chat Draft Workflow"
+    assert bundle["workflow"]["nodes"][0]["status"] == "ready"
+    assert any(ref["path"] == str(tmp_path / "reference.md") for ref in bundle["references"])
+    assert (tmp_path / "chat-draft" / ".agent-workflow" / "project.json").exists()
+    assert wf._read_registry()[bundle["project"]["id"]] == bundle["project"]["root"]
+
+
 def test_workflow_intake_structured_answers_create_draft(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
 

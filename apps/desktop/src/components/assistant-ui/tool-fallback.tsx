@@ -53,7 +53,8 @@ type AssistantCopy = ReturnType<typeof useAppCopy>['assistant']
 // Tool names that ChainToolFallback intercepts and renders as something
 // other than a ToolEntry — they don't count toward "is this a group of
 // tool calls?" because they have no visible tool block.
-const SPECIAL_TOOL_NAMES = new Set(['todo', 'image_generate', 'clarify'])
+const SPECIAL_TOOL_NAMES = new Set(['todo', 'image_generate', 'clarify', 'workflow_draft_propose', 'workflow_draft.propose'])
+const INTERACTIVE_SPECIAL_TOOL_NAMES = new Set(['clarify', 'workflow_draft_propose', 'workflow_draft.propose'])
 
 // `true` when the current ToolEntry is being rendered inside a group
 // wrapper. Lets ToolEntry suppress per-row chrome (timer / preview) that
@@ -509,6 +510,21 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
 
   const isGroup = visibleParts.length > 1
   const isRunning = messageRunning && visibleParts.some(p => p.result === undefined)
+  const hostsInteractiveSpecialTool = useAuiState(
+    useShallow((s: { message: { parts: readonly unknown[] } }) =>
+      s.message.parts.slice(startIndex, endIndex + 1).some(p => {
+        if (!p || typeof p !== 'object') {
+          return false
+        }
+        const row = p as { toolName?: unknown; type?: unknown }
+        return (
+          row.type === 'tool-call' &&
+          typeof row.toolName === 'string' &&
+          INTERACTIVE_SPECIAL_TOOL_NAMES.has(row.toolName)
+        )
+      })
+    )
+  )
   // Stable across the group's lifetime (start index doesn't shift when
   // tools append to the end), so user-driven open/close persists across
   // streaming.
@@ -530,7 +546,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
     messageRunning &&
     visibleParts.some(p => p.result === undefined && APPROVAL_TOOLS.has(p.toolName))
 
-  const open = userOpen || hostsLiveApproval
+  const open = userOpen || hostsLiveApproval || hostsInteractiveSpecialTool
   const enterRef = useEnterAnimation(messageRunning, disclosureId)
 
   const status = groupStatus(visibleParts)

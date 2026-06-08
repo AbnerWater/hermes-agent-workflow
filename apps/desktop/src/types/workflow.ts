@@ -278,3 +278,11 @@ export interface WorkflowIntakePayload {
   references?: string[]
   root?: string
 }
+
+export interface WorkflowFromDraftRequest {
+  sourceSessionId?: string
+  root?: string
+  references?: string[]
+  draftMarkdown: string
+  workflow: Workflow
+}

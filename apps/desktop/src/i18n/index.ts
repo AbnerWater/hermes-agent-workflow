@@ -972,8 +972,10 @@ export const APP_COPY = {
     assistant: {
       back: 'Back',
       branchInNewChat: 'Branch in new chat',
+      clarifyAnswer: 'Answer',
       clarifyGatewayDisconnected: 'Hermes gateway is not connected',
       clarifyNotReady: 'Clarify request is not ready yet',
+      clarifyQuestion: 'Clarification',
       copy: 'Copy',
       couldNotSendClarifyResponse: 'Could not send clarify response',
       couldNotSendApprovalResponse: 'Could not send approval response',
@@ -2362,8 +2364,10 @@ export const APP_COPY = {
     assistant: {
       back: '返回',
       branchInNewChat: '在新对话中创建分支',
+      clarifyAnswer: '回答',
       clarifyGatewayDisconnected: 'Hermes 网关未连接',
       clarifyNotReady: '澄清请求尚未就绪',
+      clarifyQuestion: '澄清',
       copy: '复制',
       couldNotSendClarifyResponse: '无法发送澄清回复',
       couldNotSendApprovalResponse: '无法发送审批回复',

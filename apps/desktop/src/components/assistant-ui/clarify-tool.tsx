@@ -20,6 +20,13 @@ interface ClarifyArgs {
   choices?: string[] | null
 }
 
+interface ClarifyResult {
+  choicesOffered?: string[] | null
+  error?: string
+  question?: string
+  userResponse?: string
+}
+
 function readClarifyArgs(args: unknown): ClarifyArgs {
   if (!args || typeof args !== 'object') {
     return {}
@@ -31,6 +38,37 @@ function readClarifyArgs(args: unknown): ClarifyArgs {
   return {
     question: typeof row.question === 'string' ? row.question : undefined,
     choices: choices && choices.length > 0 ? choices : null
+  }
+}
+
+function parseJson(value: unknown): unknown {
+  if (typeof value !== 'string') {
+    return value
+  }
+
+  try {
+    return JSON.parse(value)
+  } catch {
+    return value
+  }
+}
+
+function readClarifyResult(result: unknown): ClarifyResult {
+  const parsed = parseJson(result)
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {}
+  }
+
+  const row = parsed as Record<string, unknown>
+  const choices = Array.isArray(row.choices_offered)
+    ? row.choices_offered.filter((choice): choice is string => typeof choice === 'string')
+    : null
+
+  return {
+    choicesOffered: choices,
+    error: typeof row.error === 'string' ? row.error : undefined,
+    question: typeof row.question === 'string' ? row.question : undefined,
+    userResponse: typeof row.user_response === 'string' ? row.user_response : undefined
   }
 }
 
@@ -54,13 +92,77 @@ function RadioDot({ selected }: { selected: boolean }) {
 export const ClarifyTool = (props: ToolCallMessagePartProps) => {
   const isPending = props.result === undefined
 
-  // Once Hermes records an answer, fall back to the standard tool block so
-  // the past Q/A renders consistently with every other tool in the thread.
   if (!isPending) {
-    return <ToolFallback {...props} />
+    const result = readClarifyResult(props.result)
+    const args = readClarifyArgs(props.args)
+    const question = result.question || args.question || ''
+    const answer = result.userResponse || ''
+
+    if (!question && !answer && !result.error) {
+      return <ToolFallback {...props} />
+    }
+
+    return <ClarifyToolCompleted answer={answer} choices={result.choicesOffered ?? args.choices} error={result.error} question={question} />
   }
 
   return <ClarifyToolPending {...props} />
+}
+
+function ClarifyToolCompleted({
+  answer,
+  choices,
+  error,
+  question
+}: {
+  answer: string
+  choices?: string[] | null
+  error?: string
+  question: string
+}) {
+  const copy = useAppCopy().assistant
+
+  return (
+    <div
+      className="relative mb-3 mt-2 grid gap-2 rounded-[0.5rem] border border-border/55 bg-card/30 px-3 py-2.5 text-sm"
+      data-slot="clarify-inline-complete"
+    >
+      <div className="flex items-start gap-2.5">
+        <span
+          aria-hidden
+          className="mt-0.5 grid size-6 shrink-0 place-items-center rounded-md bg-[color-mix(in_srgb,var(--dt-primary)_11%,transparent)] text-primary ring-1 ring-inset ring-primary/15"
+        >
+          <HelpCircle className="size-3.5" />
+        </span>
+        <div className="grid min-w-0 flex-1 gap-1">
+          <div className="text-[0.68rem] font-medium uppercase tracking-[0.06em] text-muted-foreground">
+            {copy.clarifyQuestion}
+          </div>
+          <div className="whitespace-pre-wrap font-medium leading-snug text-foreground">{question || copy.loadingQuestion}</div>
+          {choices && choices.length > 0 && (
+            <div className="flex flex-wrap gap-1 pt-0.5">
+              {choices.map((choice, index) => (
+                <span
+                  className="max-w-full truncate rounded-full border border-border/50 bg-accent/25 px-2 py-0.5 text-[0.68rem] text-muted-foreground"
+                  key={`${index}-${choice}`}
+                  title={choice}
+                >
+                  {choice}
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="mt-1 rounded-md border border-border/45 bg-accent/30 px-2.5 py-1.5">
+            <div className="mb-0.5 text-[0.68rem] font-medium uppercase tracking-[0.06em] text-muted-foreground">
+              {error ? copy.toolError : copy.clarifyAnswer}
+            </div>
+            <div className={cn('whitespace-pre-wrap leading-snug', error ? 'text-destructive' : 'text-foreground/90')}>
+              {error || answer || copy.skip}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function ClarifyToolPending({ args }: ToolCallMessagePartProps) {

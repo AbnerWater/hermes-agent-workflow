@@ -133,7 +133,7 @@ class WorkflowEdge(BaseModel):
 
 class Workflow(BaseModel):
     id: str
-    title: str
+    title: str = ""
     nodes: List[WorkflowNode] = Field(default_factory=list)
     edges: List[WorkflowEdge] = Field(default_factory=list)
     updatedAt: float = Field(default_factory=time.time)
@@ -228,6 +228,14 @@ class ProjectCreateRequest(BaseModel):
     goal: str = ""
     root: Optional[str] = None
     references: List[str] = Field(default_factory=list)
+
+
+class WorkflowFromDraftRequest(BaseModel):
+    sourceSessionId: str = ""
+    root: Optional[str] = None
+    references: List[str] = Field(default_factory=list)
+    draftMarkdown: str = ""
+    workflow: Dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowIntakeStartRequest(ProjectCreateRequest):
@@ -700,6 +708,10 @@ def create_workflow_router(ws_auth_ok: Callable[[WebSocket], bool]) -> APIRouter
         _create_snapshot(project, "Project initialized", "project_init")
         error = _generate_workflow_for_project(project, reason="workflow_generate")
         return _project_bundle(project.id, error=error)
+
+    @router.post("/projects/from-draft")
+    async def create_project_from_draft(body: WorkflowFromDraftRequest) -> ProjectBundle:
+        return _create_project_from_chat_draft(body)
 
     @router.post("/projects/open")
     async def open_project(body: ProjectOpenRequest) -> ProjectBundle:
@@ -2120,6 +2132,59 @@ def _confirm_intake_draft(intake_id: str, state: Dict[str, Any], body: WorkflowI
     state["ready"] = True
     state["confirmedAt"] = time.time()
     _remember_intake_state(project, state)
+    return _project_bundle(project.id)
+
+
+def _create_project_from_chat_draft(body: WorkflowFromDraftRequest) -> ProjectBundle:
+    draft_markdown = _strip_reasoning(body.draftMarkdown).strip()
+    try:
+        from tools.workflow_draft_tool import normalize_workflow_draft
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Workflow draft normalizer unavailable: {exc}") from exc
+
+    normalized, issues = normalize_workflow_draft(body.workflow, draft_markdown)
+    if issues or not normalized:
+        raise HTTPException(status_code=422, detail=issues[0] if issues else "Workflow draft validation failed")
+
+    workflow = Workflow(**normalized)
+    name = _intake_project_name_from_draft(normalized, draft_markdown)
+    workflow.title = workflow.title or name
+    draft_markdown = draft_markdown or _workflow_draft_markdown(workflow)
+    source_session = body.sourceSessionId.strip()
+    goal_parts = [
+        f"Source Hermes chat session: {source_session}" if source_session else "",
+        f"Confirmed workflow draft:\n{draft_markdown}" if draft_markdown else "",
+    ]
+    references = [str(path).strip() for path in body.references if str(path).strip()]
+
+    project = _create_project(
+        ProjectCreateRequest(
+            name=name,
+            goal="\n\n".join(part for part in goal_parts if part),
+            root=body.root,
+            references=references,
+        )
+    )
+    _register_project(project)
+    workflow.title = workflow.title or project.name
+    _promote_ready_nodes(workflow)
+    _validate_workflow(workflow)
+    _save_workflow(project, workflow)
+    project.status = "generated"
+    _touch_project(project)
+    _append_event(
+        project.id,
+        StreamEvent(
+            id=_new_id("evt"),
+            projectId=project.id,
+            type="stage_result",
+            label="Workflow initialized",
+            summary="Confirmed chat workflow draft saved as an executable project.",
+            details={"sourceSessionId": source_session, "rawReasoningExposed": False},
+            status="success",
+        ),
+    )
+    _create_snapshot(project, "Workflow initialized from chat draft", "workflow_chat_draft_confirm")
     return _project_bundle(project.id)
 
 

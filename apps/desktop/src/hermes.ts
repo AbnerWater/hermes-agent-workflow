@@ -49,6 +49,7 @@ import type {
   WorkflowComposerCompletionItem,
   WorkflowEventsResponse,
   WorkflowFilesResponse,
+  WorkflowFromDraftRequest,
   WorkflowIntakeAnswer,
   WorkflowIntakePayload,
   WorkflowIntakeResponse,
@@ -425,6 +426,15 @@ export function confirmWorkflowIntake(
     path: `/api/workflows/intake/${encodeURIComponent(intakeId)}/confirm`,
     method: 'POST',
     body: { ...payload, intakeId },
+    timeoutMs: WORKFLOW_LLM_REQUEST_TIMEOUT_MS
+  })
+}
+
+export function initializeWorkflowFromDraft(payload: WorkflowFromDraftRequest): Promise<ProjectBundle> {
+  return window.hermesDesktop.api<ProjectBundle>({
+    path: '/api/workflows/projects/from-draft',
+    method: 'POST',
+    body: payload,
     timeoutMs: WORKFLOW_LLM_REQUEST_TIMEOUT_MS
   })
 }

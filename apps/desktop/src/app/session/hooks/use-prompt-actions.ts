@@ -94,6 +94,34 @@ interface PromptActionsOptions {
 interface SubmitTextOptions {
   attachments?: ComposerAttachment[]
   fromQueue?: boolean
+  workflowPlanning?: {
+    references: string[]
+    root?: string
+  }
+}
+
+function workflowPlanningSystemContext(planning?: SubmitTextOptions['workflowPlanning']): string {
+  if (!planning) {
+    return ''
+  }
+
+  const references = (planning.references ?? []).map(ref => ref.trim()).filter(Boolean)
+  const root = (planning.root || '').trim()
+
+  return [
+    'HERMES_WORKFLOW_PLANNING_CONTEXT: true',
+    'You are helping the user create a Hermes Workflow from this normal chat session.',
+    'Treat this turn as workflow planning context, but keep the conversation in the ordinary chat session.',
+    'Workflow creation protocol: you must gather execution details with the clarify tool before proposing any draft.',
+    'Ask at least two clarify questions before calling workflow_draft_propose. Each clarify call must contain one focused workflow execution question and exactly three recommended choices ordered by priority; the UI provides an Other answer.',
+    'If the user asks to adjust a draft, use the current chat history and latest draft, ask more clarify questions when needed, then call workflow_draft_propose again with the revised draft.',
+    'When the workflow plan is ready after clarification, call workflow_draft_propose with draftMarkdown, clarificationSummary, and a workflow object whose nodes array is complete and non-empty. Every node must include type, title, and description. Node ids, workflow id, workflow title, edge ids, edge handles, positions, and updatedAt may be omitted because Hermes will derive or normalize them.',
+    'Do not paste the full workflow draft in ordinary assistant text. The full draft must be submitted through workflow_draft_propose so the UI can validate, preview, and initialize it.',
+    'If workflow_draft_propose returns a validation error, write at most one short sentence to the user, fix the structured workflow object, and call workflow_draft_propose again. Do not show the full invalid draft to the user.',
+    'Workflow node rules: normal task nodes use one input and one success output; review/test nodes use one input plus success and failure outputs. Ordinary task nodes must not use failure outputs. Each output handle can connect to at most one input; an input can receive multiple sources.',
+    root ? `Selected workflow project root: ${root}` : 'Selected workflow project root: use the Hermes default workflows directory.',
+    references.length ? `Workflow references:\n${references.map(ref => `- ${ref}`).join('\n')}` : 'Workflow references: none supplied.'
+  ].join('\n')
 }
 
 function renderCommandsCatalog(catalog: CommandsCatalogLike): string {
@@ -334,7 +362,12 @@ export function usePromptActions({
         await syncImageAttachmentsForSubmit(sessionId, attachments, {
           updateComposerAttachments: usingComposerAttachments
         })
-        await requestGateway('prompt.submit', { session_id: sessionId, text })
+        const workflowContext = workflowPlanningSystemContext(options?.workflowPlanning)
+        await requestGateway('prompt.submit', {
+          session_id: sessionId,
+          text,
+          ...(workflowContext ? { system_context: workflowContext } : {})
+        })
 
         if (usingComposerAttachments) {
           clearComposerAttachments()

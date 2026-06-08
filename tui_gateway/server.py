@@ -138,6 +138,7 @@ except (ValueError, TypeError):
 _SLASH_WORKER_TIMEOUT_S = max(5.0, _slash_timeout)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
+WORKFLOW_PLANNING_CONTEXT_MARKER = "HERMES_WORKFLOW_PLANNING_CONTEXT"
 
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
@@ -886,6 +887,38 @@ def _block(event: str, sid: str, payload: dict, timeout: int = 300) -> str:
             _pending_prompt_payloads.pop(rid, None)
     with _prompt_lock:
         return _answers.pop(rid, "")
+
+
+def _session_task_id_for_sid(sid: str) -> str:
+    with _sessions_lock:
+        session = _sessions.get(sid) or {}
+        return str(session.get("session_key") or sid or "")
+
+
+def _mark_workflow_planning_started(task_id: str) -> None:
+    try:
+        from tools.workflow_draft_tool import start_workflow_planning
+
+        start_workflow_planning(task_id)
+    except Exception:
+        logger.debug("workflow planning state start failed", exc_info=True)
+
+
+def _mark_workflow_clarified_for_sid(sid: str, answer: str) -> None:
+    if answer == "":
+        return
+    try:
+        from tools.workflow_draft_tool import note_workflow_clarification
+
+        note_workflow_clarification(_session_task_id_for_sid(sid))
+    except Exception:
+        logger.debug("workflow clarify state update failed", exc_info=True)
+
+
+def _handle_clarify_request(sid: str, question: Any, choices: Any) -> str:
+    answer = _block("clarify.request", sid, {"question": question, "choices": choices})
+    _mark_workflow_clarified_for_sid(sid, answer)
+    return answer
 
 
 def _clear_pending(sid: str | None = None) -> None:
@@ -1992,9 +2025,7 @@ def _agent_cbs(sid: str) -> dict:
         "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
         ),
-        "clarify_callback": lambda q, c: _block(
-            "clarify.request", sid, {"question": q, "choices": c}
-        ),
+        "clarify_callback": lambda q, c: _handle_clarify_request(sid, q, c),
     }
 
 
@@ -4045,6 +4076,7 @@ def _(rid, params: dict) -> dict:
 @method("prompt.submit")
 def _(rid, params: dict) -> dict:
     sid, text = params.get("session_id", ""), params.get("text", "")
+    system_context = str(params.get("system_context") or "").strip()
     truncate_user_ordinal = params.get("truncate_before_user_ordinal")
     session, err = _sess_nowait(params, rid)
     if err:
@@ -4098,7 +4130,7 @@ def _(rid, params: dict) -> dict:
                 session["running"] = False
                 _clear_inflight_turn(session)
             return
-        _run_prompt_submit(rid, sid, session, text)
+        _run_prompt_submit(rid, sid, session, text, system_context=system_context)
 
     threading.Thread(target=run_after_agent_ready, daemon=True).start()
     return _ok(rid, {"status": "streaming"})
@@ -4295,7 +4327,7 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
-def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+def _run_prompt_submit(rid, sid: str, session: dict, text: Any, *, system_context: str = "") -> None:
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
@@ -4325,6 +4357,20 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             # the sudo.request overlay. (secret capture is a module global, so
             # re-running is a harmless no-op.)
             _wire_callbacks(sid)
+            prior_ephemeral_prompt = getattr(agent, "ephemeral_system_prompt", None)
+            workflow_context_applied = False
+            if system_context:
+                if WORKFLOW_PLANNING_CONTEXT_MARKER in system_context:
+                    _mark_workflow_planning_started(session["session_key"])
+                agent.ephemeral_system_prompt = "\n\n".join(
+                    part for part in (prior_ephemeral_prompt, system_context) if part
+                )
+                workflow_context_applied = True
+                if hasattr(agent, "_invalidate_system_prompt"):
+                    try:
+                        agent._invalidate_system_prompt()
+                    except Exception:
+                        pass
             cwd = _session_cwd(session)
             _register_session_cwd(session)
             cols = session.get("cols", 80)
@@ -4641,6 +4687,13 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             )
             _emit("error", sid, {"message": str(e)})
         finally:
+            if "workflow_context_applied" in locals() and workflow_context_applied:
+                try:
+                    agent.ephemeral_system_prompt = prior_ephemeral_prompt
+                    if hasattr(agent, "_invalidate_system_prompt"):
+                        agent._invalidate_system_prompt()
+                except Exception:
+                    pass
             try:
                 if approval_token is not None:
                     reset_current_session_key(approval_token)
