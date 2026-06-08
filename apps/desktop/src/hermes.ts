@@ -54,12 +54,14 @@ import type {
   WorkflowIntakePayload,
   WorkflowIntakeResponse,
   WorkflowProject,
+  VersionSnapshotDetail,
   WorkflowRunResponse,
   WorkflowSlashCommandItem
 } from '@/types/workflow'
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
 const WORKFLOW_LLM_REQUEST_TIMEOUT_MS = 180_000
+const WORKFLOW_SNAPSHOT_DETAIL_TIMEOUT_MS = 15_000
 const WORKFLOW_SESSION_PREFIXES = ['workflow-project-', 'workflow-node-'] as const
 
 function isWorkflowSessionId(id: null | string | undefined): boolean {
@@ -705,6 +707,21 @@ export function createWorkflowSnapshot(projectId: string): Promise<{ ok: boolean
   return window.hermesDesktop.api<{ ok: boolean }>({
     path: `/api/workflows/projects/${encodeURIComponent(projectId)}/snapshots`,
     method: 'POST'
+  })
+}
+
+export function getWorkflowSnapshotDetail(projectId: string, commit: string): Promise<{ snapshot: VersionSnapshotDetail }> {
+  return window.hermesDesktop.api<{ snapshot: VersionSnapshotDetail }>({
+    path: `/api/workflows/projects/${encodeURIComponent(projectId)}/snapshots/${encodeURIComponent(commit)}`,
+    timeoutMs: WORKFLOW_SNAPSHOT_DETAIL_TIMEOUT_MS
+  })
+}
+
+export function restoreWorkflowSnapshot(projectId: string, commit: string): Promise<ProjectBundle> {
+  return window.hermesDesktop.api<ProjectBundle>({
+    path: `/api/workflows/projects/${encodeURIComponent(projectId)}/snapshots/restore`,
+    method: 'POST',
+    body: { commit }
   })
 }
 

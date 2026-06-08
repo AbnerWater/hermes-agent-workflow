@@ -20,6 +20,7 @@ import threading
 import time
 import uuid
 import zipfile
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Literal, Optional
@@ -66,6 +67,11 @@ WORKFLOW_DIR = ".agent-workflow"
 REGISTRY_FILE = "workflow-projects.json"
 DEFAULT_NODE_WIDTH = 260
 DEFAULT_NODE_HEIGHT = 112
+SNAPSHOT_MANAGED_PATHS = (WORKFLOW_DIR, "references", "workflow", "artifacts", "outputs", "logs")
+ROLLBACK_BACKUP_BRANCH = "workflow-rollback-backup"
+SNAPSHOT_DIFF_MAX_CHARS = 24000
+ACTIVE_ROLLBACK_BLOCKING_STATUSES = {"running", "paused", "waiting_user_confirm"}
+SNAPSHOT_API_VERSION = 2
 
 
 class WorkflowPosition(BaseModel):
@@ -169,7 +175,30 @@ class VersionSnapshot(BaseModel):
     label: str
     reason: str
     commit: Optional[str] = None
+    shortCommit: Optional[str] = None
+    parentCommit: Optional[str] = None
+    authorName: str = ""
+    authorEmail: str = ""
+    subject: str = ""
+    body: str = ""
+    fileCount: int = 0
+    insertions: int = 0
+    deletions: int = 0
     createdAt: float = Field(default_factory=time.time)
+
+
+class SnapshotFileChange(BaseModel):
+    path: str
+    status: str
+    insertions: int = 0
+    deletions: int = 0
+    diff: str = ""
+    truncated: bool = False
+    isBinary: bool = False
+
+
+class VersionSnapshotDetail(VersionSnapshot):
+    files: List[SnapshotFileChange] = Field(default_factory=list)
 
 
 class StreamEvent(BaseModel):
@@ -219,6 +248,8 @@ class ProjectBundle(BaseModel):
     skills: List[SkillBinding] = Field(default_factory=list)
     artifacts: List[Artifact] = Field(default_factory=list)
     snapshots: List[VersionSnapshot] = Field(default_factory=list)
+    snapshotApiVersion: int = SNAPSHOT_API_VERSION
+    rollbackBackupCommit: Optional[str] = None
     latestRun: Optional[ExecutionRun] = None
     error: Optional[str] = None
 
@@ -411,6 +442,7 @@ class WorkflowAgentRunner:
         message_label: str = "AI 回复",
         persist_final: bool = True,
         persist_runtime: bool = True,
+        enabled_toolsets_override: Optional[List[str]] = None,
     ) -> WorkflowAgentResult:
         started_at = time.time()
         deltas: List[str] = []
@@ -508,6 +540,7 @@ class WorkflowAgentRunner:
             system_prompt=system_prompt,
             max_iterations=max_iterations,
             model_override=model_override,
+            enabled_toolsets_override=enabled_toolsets_override,
             tool_start_callback=tool_start,
             tool_complete_callback=tool_complete,
             tool_progress_callback=tool_progress,
@@ -594,6 +627,7 @@ class WorkflowAgentRunner:
         system_prompt: Optional[str],
         max_iterations: int,
         model_override: Optional[str],
+        enabled_toolsets_override: Optional[List[str]],
         tool_start_callback: Callable[..., None],
         tool_complete_callback: Callable[..., None],
         tool_progress_callback: Callable[..., None],
@@ -611,10 +645,16 @@ class WorkflowAgentRunner:
         if model_override:
             model = model_override
         runtime = resolve_runtime_provider(requested=requested_provider, target_model=model or None)
-        enabled_toolsets = [
-            toolset for toolset in _load_enabled_toolsets()
-            if str(toolset) not in _WORKFLOW_DISABLED_TOOLSETS
-        ]
+        if enabled_toolsets_override is None:
+            enabled_toolsets = [
+                toolset for toolset in _load_enabled_toolsets()
+                if str(toolset) not in _WORKFLOW_DISABLED_TOOLSETS
+            ]
+        else:
+            enabled_toolsets = [
+                toolset for toolset in enabled_toolsets_override
+                if str(toolset) not in _WORKFLOW_DISABLED_TOOLSETS
+            ]
         return AIAgent(
             model=model,
             max_iterations=max_iterations,
@@ -1173,7 +1213,16 @@ def create_workflow_router(ws_auth_ok: Callable[[WebSocket], bool]) -> APIRouter
     @router.get("/projects/{project_id}/snapshots")
     async def list_snapshots(project_id: str) -> Dict[str, Any]:
         project = _load_project(project_id)
-        return {"snapshots": _list_snapshots(project)}
+        return {
+            "rollbackBackupCommit": _rollback_backup_commit(project),
+            "snapshotApiVersion": SNAPSHOT_API_VERSION,
+            "snapshots": _list_snapshots(project),
+        }
+
+    @router.get("/projects/{project_id}/snapshots/{commit}")
+    async def get_snapshot_detail(project_id: str, commit: str) -> Dict[str, Any]:
+        project = _load_project(project_id)
+        return {"snapshot": _snapshot_detail(project, commit)}
 
     @router.post("/projects/{project_id}/snapshots")
     async def create_snapshot(project_id: str) -> Dict[str, Any]:
@@ -1184,20 +1233,7 @@ def create_workflow_router(ws_auth_ok: Callable[[WebSocket], bool]) -> APIRouter
     @router.post("/projects/{project_id}/snapshots/restore")
     async def restore_snapshot(project_id: str, body: RestoreSnapshotRequest) -> ProjectBundle:
         project = _load_project(project_id)
-        _git(project.root, "checkout", body.commit, "--", WORKFLOW_DIR)
-        _append_event(
-            project.id,
-            StreamEvent(
-                id=_new_id("evt"),
-                projectId=project.id,
-                type="snapshot",
-                label="快照已恢复",
-                summary=f"已从 {body.commit[:8]} 恢复 .agent-workflow 配置。",
-                status="warning",
-            ),
-        )
-        _create_snapshot(project, "Restore checkpoint", "restore_checkpoint")
-        return _project_bundle(project.id)
+        return _restore_snapshot(project, body.commit)
 
     @router.get("/projects/{project_id}/references")
     async def get_references(project_id: str) -> Dict[str, Any]:
@@ -1243,7 +1279,7 @@ def _run_engine(project_id: str, run_id: str, stop: threading.Event) -> None:
                 return
             workflow = _load_workflow(project)
             _promote_ready_nodes(workflow)
-            ready = [node for node in workflow.nodes if node.status in {"ready", "retrying"}]
+            ready = _ready_nodes_for_run(workflow, run)
             if not ready:
                 if _workflow_is_done(workflow):
                     run.status = "completed"
@@ -1266,7 +1302,8 @@ def _run_engine(project_id: str, run_id: str, stop: threading.Event) -> None:
                     _create_snapshot(project, "Workflow completed", "final_delivery")
                 return
 
-            batch = ready[: max(1, run.maxConcurrency)]
+            batch_size = 1 if run.mode == "auto" else max(1, run.maxConcurrency)
+            batch = ready[:batch_size]
             for node in batch:
                 if stop.is_set():
                     return
@@ -1319,79 +1356,39 @@ def _execute_node(project: WorkflowProject, workflow: Workflow, run: ExecutionRu
     node.lastRunId = run.id
     session_id = _ensure_node_agent_session(project, node)
     _save_workflow(project, workflow)
-    prompt = _node_execution_prompt(project, workflow, run, node)
-    try:
-        result = _agent_runner.run(
-            project=project,
-            prompt=prompt,
+    review_feedback: Optional[ReviewDecision] = None
+    execution_attempt = 0
+    while True:
+        execution_attempt += 1
+        final_text = _run_node_execution_attempt(
+            project,
+            workflow,
+            run,
+            node,
             session_id=session_id,
-            node=node,
-            run=run,
-            system_prompt=_node_execution_system_prompt(project, node),
-            max_iterations=max(12, min(60, 12 + len(_effective_node_skills(project, node)) * 4)),
-            model_override=node.modelOverride or node.model,
-            message_label=f"节点输出：{node.title}",
+            started=started,
+            review_feedback=review_feedback,
+            execution_attempt=execution_attempt,
         )
-        node.agentSessionId = result.session_id
-        final_text = _strip_reasoning(result.text)
-    except Exception as exc:
+        if final_text is None:
+            return
+
         if _runtime.should_stop(run.id) or _load_run(run.id).status in {"paused", "stopped"}:
             return
-        node.status = "failed"
-        node.retryCount += 1
-        node.outputs.update({"error": str(exc), "failedAt": time.time()})
-        _save_workflow(project, workflow)
-        _append_event(
-            project.id,
-            StreamEvent(
-                id=_new_id("evt"),
-                projectId=project.id,
-                runId=run.id,
-                nodeId=node.id,
-                type="error",
-                label="节点执行失败",
-                summary=_truncate_text(str(exc), 1200),
-                details={"agentSessionId": session_id, "rawReasoningExposed": False},
-                status="error",
-                durationMs=int((time.time() - started) * 1000),
-            ),
+
+        artifact = _write_node_artifact(project, run, node, final_text)
+        node.artifacts = list(dict.fromkeys([*node.artifacts, artifact.path]))
+        node.fileChanges = _collect_node_file_changes(project, before_change_paths)
+        node.outputs.update(
+            {
+                "summary": _truncate_text(final_text, 1600),
+                "artifact": artifact.path,
+                "fileChanges": [change.model_dump() for change in node.fileChanges],
+                "completedAt": time.time(),
+                "agentSessionId": node.agentSessionId,
+                "executionAttempt": execution_attempt,
+            }
         )
-        return
-
-    if _runtime.should_stop(run.id) or _load_run(run.id).status in {"paused", "stopped"}:
-        return
-
-    artifact = _write_node_artifact(project, run, node, final_text)
-    node.artifacts = list(dict.fromkeys([*node.artifacts, artifact.path]))
-    node.fileChanges = _collect_node_file_changes(project, before_change_paths)
-    node.outputs.update(
-        {
-            "summary": _truncate_text(final_text, 1600),
-            "artifact": artifact.path,
-            "fileChanges": [change.model_dump() for change in node.fileChanges],
-            "completedAt": time.time(),
-            "agentSessionId": node.agentSessionId,
-        }
-    )
-    _append_event(
-        project.id,
-        StreamEvent(
-            id=_new_id("evt"),
-            projectId=project.id,
-            runId=run.id,
-            nodeId=node.id,
-            type="stage_result",
-            label="阶段结果",
-            summary=f"「{node.title}」已生成节点产物：{artifact.name}。",
-            details={"artifact": artifact.model_dump()},
-            status="success",
-            durationMs=int((time.time() - started) * 1000),
-        ),
-    )
-
-    if _node_requires_review_decision(workflow, node):
-        review_decision = _review_decision_from_text(final_text, workflow, node)
-        node.outputs["reviewDecision"] = review_decision.model_dump()
         _append_event(
             project.id,
             StreamEvent(
@@ -1400,76 +1397,78 @@ def _execute_node(project: WorkflowProject, workflow: Workflow, run: ExecutionRu
                 runId=run.id,
                 nodeId=node.id,
                 type="stage_result",
-                label="审查决策",
-                summary=_review_decision_summary(workflow, node, review_decision),
-                details={"reviewDecision": review_decision.model_dump()},
-                status="success" if review_decision.decision == "pass" else "warning",
+                label="阶段结果",
+                summary=f"「{node.title}」已生成节点产物：{artifact.name}。",
+                details={"artifact": artifact.model_dump(), "executionAttempt": execution_attempt},
+                status="success",
+                durationMs=int((time.time() - started) * 1000),
             ),
         )
 
-        if run.mode == "auto":
-            if review_decision.decision == "pass":
+        if not _node_requires_independent_review(workflow, node):
+            break
+
+        decision_node = _node_requires_review_decision(workflow, node)
+        review_decision = _run_node_review(
+            project,
+            workflow,
+            run,
+            node,
+            final_text=final_text,
+            artifact=artifact,
+            execution_attempt=execution_attempt,
+            require_feedback_target=decision_node,
+        )
+        if review_decision is None:
+            return
+
+        if review_decision.decision == "pass":
+            if decision_node:
+                if run.mode != "auto":
+                    _mark_node_waiting_for_review_decision(project, workflow, run, node, review_decision, reason="manual_review_confirmation")
+                    return
                 _apply_node_confirm(project, workflow, run, node, reason="auto_review_pass", decision=review_decision)
-                _append_node_status(project, run, node, "自动审查通过", "结构化审查结果为 pass，调度器继续推进下游。", status="success")
+                _append_node_status(project, run, node, "自动审查通过", "独立审查结果为 pass，调度器继续推进下游。", status="success")
                 return
-            if review_decision.decision == "return" and review_decision.targetNodeId:
+            break
+
+        if decision_node:
+            if run.mode == "auto" and review_decision.decision == "return" and review_decision.targetNodeId:
                 try:
                     _apply_node_return(project, workflow, run, node, review_decision.targetNodeId, review_decision.reason or "Auto review requested revision")
                 except HTTPException:
                     return
                 return
-
-            node.status = "waiting_user_confirm"
-            run.status = "waiting_user_confirm"
-            run.currentNodeId = node.id
-            run.updatedAt = time.time()
-            _save_workflow(project, workflow)
-            _save_run(run)
-            _append_event(
-                project.id,
-                StreamEvent(
-                    id=_new_id("evt"),
-                    projectId=project.id,
-                    runId=run.id,
-                    nodeId=node.id,
-                    type="approval",
-                    label="等待用户确认",
-                    summary=f"「{node.title}」未返回可自动执行的审查决策，请人工选择 Confirm 或 Return。",
-                    details={"reviewDecision": review_decision.model_dump(), "mode": run.mode},
-                    status="warning",
-                ),
-            )
-            _create_snapshot(project, f"Review needs user decision {node.title}", "review_user_decision")
+            _mark_node_waiting_for_review_decision(project, workflow, run, node, review_decision, reason="review_needs_human")
             return
 
-        feedback_targets = [_node_by_id(workflow, edge.target).model_dump() for edge in _feedback_edges(workflow, node.id)]
-        node.status = "waiting_user_confirm"
+        if review_decision.decision != "return":
+            _mark_node_waiting_for_review_decision(project, workflow, run, node, review_decision, reason="review_needs_human")
+            return
+
+        if node.retryCount >= node.maxRetries:
+            exhausted_decision = ReviewDecision(
+                decision="needs_human",
+                reason=f"Task review retry limit reached: {node.retryCount}/{node.maxRetries}. {review_decision.reason}".strip(),
+            )
+            node.outputs["reviewDecision"] = exhausted_decision.model_dump()
+            _mark_node_waiting_for_review_decision(project, workflow, run, node, exhausted_decision, reason="task_review_retry_exhausted")
+            return
+
+        node.retryCount += 1
+        node.status = "retrying"
+        node.outputs["reviewFeedback"] = review_decision.model_dump()
+        _reset_node_for_revision(node)
         _save_workflow(project, workflow)
-        _append_event(
-            project.id,
-            StreamEvent(
-                id=_new_id("evt"),
-                projectId=project.id,
-                runId=run.id,
-                nodeId=node.id,
-                type="approval",
-                label="等待用户确认",
-                summary=(
-                    f"「{node.title}」需要确认通过，或沿 feedback edge 返回返工。"
-                    if feedback_targets
-                    else f"「{node.title}」需要确认后才能推进下游节点。"
-                ),
-                details={
-                    "reviewRules": node.reviewRules.model_dump(),
-                    "mode": run.mode,
-                    "reviewDecision": review_decision.model_dump(),
-                    "feedbackTargets": feedback_targets,
-                },
-                status="warning",
-            ),
+        _append_node_status(
+            project,
+            run,
+            node,
+            "节点审查未通过",
+            f"独立审查要求完善，正在进行第 {node.retryCount}/{node.maxRetries} 次自动重试。",
+            status="warning",
         )
-        _create_snapshot(project, f"Review waiting {node.title}", "review_wait")
-        return
+        review_feedback = review_decision
 
     if _node_needs_confirmation(run, node):
         node.status = "waiting_user_confirm"
@@ -1496,6 +1495,176 @@ def _execute_node(project: WorkflowProject, workflow: Workflow, run: ExecutionRu
     _save_workflow(project, workflow)
     _append_node_status(project, run, node, "节点已完成", "下游依赖已重新计算。", status="success")
     _create_snapshot(project, f"Completed {node.title}", "node_complete")
+
+
+def _run_node_execution_attempt(
+    project: WorkflowProject,
+    workflow: Workflow,
+    run: ExecutionRun,
+    node: WorkflowNode,
+    *,
+    session_id: str,
+    started: float,
+    review_feedback: Optional[ReviewDecision],
+    execution_attempt: int,
+) -> Optional[str]:
+    prompt = _node_execution_prompt(
+        project,
+        workflow,
+        run,
+        node,
+        review_feedback=review_feedback,
+        execution_attempt=execution_attempt,
+    )
+    try:
+        result = _agent_runner.run(
+            project=project,
+            prompt=prompt,
+            session_id=session_id,
+            node=node,
+            run=run,
+            system_prompt=_node_execution_system_prompt(project, node),
+            max_iterations=max(12, min(60, 12 + len(_effective_node_skills(project, node)) * 4)),
+            model_override=node.modelOverride or node.model,
+            message_label=f"节点输出：{node.title}",
+        )
+        node.agentSessionId = result.session_id
+        return _strip_reasoning(result.text)
+    except Exception as exc:
+        if _runtime.should_stop(run.id) or _load_run(run.id).status in {"paused", "stopped"}:
+            return None
+        node.status = "failed"
+        node.retryCount += 1
+        node.outputs.update({"error": str(exc), "failedAt": time.time()})
+        _save_workflow(project, workflow)
+        _append_event(
+            project.id,
+            StreamEvent(
+                id=_new_id("evt"),
+                projectId=project.id,
+                runId=run.id,
+                nodeId=node.id,
+                type="error",
+                label="节点执行失败",
+                summary=_truncate_text(str(exc), 1200),
+                details={"agentSessionId": session_id, "rawReasoningExposed": False},
+                status="error",
+                durationMs=int((time.time() - started) * 1000),
+            ),
+        )
+        return None
+
+
+def _run_node_review(
+    project: WorkflowProject,
+    workflow: Workflow,
+    run: ExecutionRun,
+    node: WorkflowNode,
+    *,
+    final_text: str,
+    artifact: Artifact,
+    execution_attempt: int,
+    require_feedback_target: bool,
+) -> Optional[ReviewDecision]:
+    node.status = "reviewing"
+    _save_workflow(project, workflow)
+    _append_node_status(project, run, node, "独立审查中", "已创建 review subagent 对节点结果进行独立审查。", status="warning")
+
+    review_session_id = f"workflow-review-{project.id}-{run.id}-{node.id}-{execution_attempt}"
+    try:
+        result = _agent_runner.run(
+            project=project,
+            prompt=_node_review_prompt(project, workflow, run, node, final_text=final_text, artifact=artifact, execution_attempt=execution_attempt),
+            session_id=review_session_id,
+            node=node,
+            run=run,
+            system_prompt=_node_review_system_prompt(project, node),
+            max_iterations=8,
+            model_override=node.modelOverride or node.model,
+            message_label=f"独立审查：{node.title}",
+            enabled_toolsets_override=[],
+        )
+    except Exception as exc:
+        decision = ReviewDecision(decision="needs_human", reason=f"Review subagent failed: {_truncate_text(str(exc), 800)}")
+        node.outputs["reviewDecision"] = decision.model_dump()
+        node.outputs["reviewSessionId"] = review_session_id
+        _mark_node_waiting_for_review_decision(project, workflow, run, node, decision, reason="review_agent_error")
+        return None
+
+    review_text = _strip_reasoning(result.text)
+    decision = _review_decision_from_text(
+        review_text,
+        workflow,
+        node,
+        require_feedback_target=require_feedback_target,
+    )
+    node.outputs["reviewDecision"] = decision.model_dump()
+    node.outputs["reviewSummary"] = _truncate_text(review_text, 1600)
+    node.outputs["reviewSessionId"] = result.session_id or review_session_id
+    node.outputs["reviewAttempt"] = execution_attempt
+    _save_workflow(project, workflow)
+    _append_event(
+        project.id,
+        StreamEvent(
+            id=_new_id("evt"),
+            projectId=project.id,
+            runId=run.id,
+            nodeId=node.id,
+            type="stage_result",
+            label="审查决策",
+            summary=_review_decision_summary(workflow, node, decision),
+            details={
+                "reviewDecision": decision.model_dump(),
+                "reviewSessionId": result.session_id or review_session_id,
+                "executionAttempt": execution_attempt,
+            },
+            status="success" if decision.decision == "pass" else "warning",
+        ),
+    )
+    return decision
+
+
+def _mark_node_waiting_for_review_decision(
+    project: WorkflowProject,
+    workflow: Workflow,
+    run: ExecutionRun,
+    node: WorkflowNode,
+    decision: ReviewDecision,
+    *,
+    reason: str,
+) -> None:
+    feedback_targets = [_node_by_id(workflow, edge.target).model_dump() for edge in _feedback_edges(workflow, node.id)]
+    node.status = "waiting_user_confirm"
+    run.status = "waiting_user_confirm"
+    run.currentNodeId = node.id
+    run.updatedAt = time.time()
+    _save_workflow(project, workflow)
+    _save_run(run)
+    _append_event(
+        project.id,
+        StreamEvent(
+            id=_new_id("evt"),
+            projectId=project.id,
+            runId=run.id,
+            nodeId=node.id,
+            type="approval",
+            label="等待用户确认",
+            summary=(
+                f"「{node.title}」需要人工处理审查结果：{decision.reason}"
+                if decision.reason
+                else f"「{node.title}」需要人工选择审查结果。"
+            ),
+            details={
+                "reason": reason,
+                "reviewRules": node.reviewRules.model_dump(),
+                "mode": run.mode,
+                "reviewDecision": decision.model_dump(),
+                "feedbackTargets": feedback_targets,
+            },
+            status="warning",
+        ),
+    )
+    _create_snapshot(project, f"Review needs user decision {node.title}", "review_user_decision")
 
 
 def _start_intake_session(body: WorkflowIntakeStartRequest) -> Dict[str, Any]:
@@ -2725,6 +2894,10 @@ def _node_has_legacy_feedback_edge(workflow: Workflow, node_id: str) -> bool:
     return any(edge.source == node_id and edge.type == "feedback" and edge.sourceHandle is None for edge in workflow.edges)
 
 
+def _node_has_failure_output(workflow: Workflow, node_id: str) -> bool:
+    return bool(_failure_edges(workflow, node_id))
+
+
 def _promote_ready_nodes(workflow: Workflow) -> None:
     terminal = {"completed", "skipped"}
     for node in workflow.nodes:
@@ -2736,6 +2909,44 @@ def _promote_ready_nodes(workflow: Workflow) -> None:
             continue
         if all(_node_by_id(workflow, dep.source).status in terminal for dep in deps):
             node.status = "ready"
+
+
+def _workflow_execution_order(workflow: Workflow) -> List[str]:
+    node_ids = [node.id for node in workflow.nodes]
+    node_id_set = set(node_ids)
+    original_index = {node_id: index for index, node_id in enumerate(node_ids)}
+    indegree = {node_id: 0 for node_id in node_ids}
+    outgoing: Dict[str, List[str]] = {node_id: [] for node_id in node_ids}
+    for edge in _success_edges(workflow):
+        if edge.source not in node_id_set or edge.target not in node_id_set:
+            continue
+        outgoing[edge.source].append(edge.target)
+        indegree[edge.target] += 1
+
+    queue = sorted([node_id for node_id, count in indegree.items() if count == 0], key=original_index.get)
+    ordered: List[str] = []
+    while queue:
+        node_id = queue.pop(0)
+        ordered.append(node_id)
+        for target_id in outgoing.get(node_id, []):
+            indegree[target_id] -= 1
+            if indegree[target_id] == 0:
+                queue.append(target_id)
+        queue.sort(key=original_index.get)
+
+    if len(ordered) != len(node_ids):
+        seen = set(ordered)
+        ordered.extend(node_id for node_id in node_ids if node_id not in seen)
+    return ordered
+
+
+def _ready_nodes_for_run(workflow: Workflow, _run: ExecutionRun) -> List[WorkflowNode]:
+    ready_by_id = {
+        node.id: node
+        for node in workflow.nodes
+        if node.status in {"ready", "retrying"}
+    }
+    return [ready_by_id[node_id] for node_id in _workflow_execution_order(workflow) if node_id in ready_by_id]
 
 
 def _workflow_is_done(workflow: Workflow) -> bool:
@@ -2753,7 +2964,16 @@ def _feedback_target_ids(workflow: Workflow, node_id: str) -> set[str]:
 
 
 def _node_requires_review_decision(workflow: Workflow, node: WorkflowNode) -> bool:
-    return _node_is_decision_node(workflow, node)
+    node_type = str(node.type or "").strip().lower()
+    return node_type in {"review", "test", "testing"} or _node_has_failure_output(workflow, node.id)
+
+
+def _node_requires_independent_review(workflow: Workflow, node: WorkflowNode) -> bool:
+    return (
+        _node_requires_review_decision(workflow, node)
+        or node.reviewRules.required
+        or bool(node.reviewRules.checklist)
+    )
 
 
 def _dependency_successors(workflow: Workflow, node_id: str) -> List[str]:
@@ -2945,7 +3165,13 @@ def _apply_node_return(
     return decision
 
 
-def _review_decision_from_text(text: str, workflow: Workflow, node: WorkflowNode) -> ReviewDecision:
+def _review_decision_from_text(
+    text: str,
+    workflow: Workflow,
+    node: WorkflowNode,
+    *,
+    require_feedback_target: bool = True,
+) -> ReviewDecision:
     allowed_targets = _feedback_target_ids(workflow, node.id)
     data: Optional[Dict[str, Any]] = None
     stripped = _strip_reasoning(text)
@@ -2972,6 +3198,8 @@ def _review_decision_from_text(text: str, workflow: Workflow, node: WorkflowNode
     decision = str(data.get("decision") or "").strip().lower()
     target = data.get("targetNodeId") or data.get("target") or data.get("returnTargetId")
     target_id = str(target).strip() if target else None
+    if target_id and target_id.lower() in {"null", "none", "nil"}:
+        target_id = None
     reason = _truncate_text(str(data.get("reason") or data.get("summary") or ""), 1200)
 
     if decision in {"pass", "passed", "approve", "approved", "confirm"}:
@@ -2979,7 +3207,13 @@ def _review_decision_from_text(text: str, workflow: Workflow, node: WorkflowNode
     if decision in {"return", "revise", "revision", "fail", "failed", "rework"}:
         if not target_id and len(allowed_targets) == 1:
             target_id = next(iter(allowed_targets))
-        if target_id not in allowed_targets:
+        if target_id and target_id not in allowed_targets:
+            return ReviewDecision(
+                decision="needs_human",
+                targetNodeId=target_id,
+                reason=reason or "Return decision did not reference a valid feedback target.",
+            )
+        if require_feedback_target and target_id not in allowed_targets:
             return ReviewDecision(
                 decision="needs_human",
                 targetNodeId=target_id,
@@ -3137,11 +3371,19 @@ def _node_execution_system_prompt(project: WorkflowProject, node: WorkflowNode) 
         "You are a Hermes Agent executing one node inside a desktop workflow workbench. "
         "Work only on the assigned node objective. Use tools when useful, keep outputs auditable, "
         f"and write or reference artifacts under the project root: {project.root}. "
-        "Do not expose hidden reasoning or chain-of-thought."
+        "Do not expose hidden reasoning or chain-of-thought. An independent review subagent will judge review rules after your result."
     )
 
 
-def _node_execution_prompt(project: WorkflowProject, workflow: Workflow, run: ExecutionRun, node: WorkflowNode) -> str:
+def _node_execution_prompt(
+    project: WorkflowProject,
+    workflow: Workflow,
+    run: ExecutionRun,
+    node: WorkflowNode,
+    *,
+    review_feedback: Optional[ReviewDecision] = None,
+    execution_attempt: int = 1,
+) -> str:
     parents = [_node_by_id(workflow, edge.source) for edge in _incoming_dependencies(workflow, node.id)]
     enabled_refs = [ref.model_dump() for ref in _load_references(project) if ref.enabled]
     selected_refs = _node_reference_details(project, node)
@@ -3165,38 +3407,101 @@ def _node_execution_prompt(project: WorkflowProject, workflow: Workflow, run: Ex
         }
         for parent in parents
     ]
-    return "\n".join(
+    parts = [
+        "Execute this workflow node and return a concise final result suitable for the workflow Stream panel.",
+        "If you create files, put them below artifacts/ or outputs/ and mention their paths.",
+        "Do not reveal chain-of-thought; summarize process and decisions only.",
+        "Do not make the pass/fail review decision yourself; a separate review subagent will do that.",
+        "",
+        f"Project: {project.name}",
+        f"Project root: {project.root}",
+        f"Project goal:\n{project.goal}",
+        f"Run: {run.id} ({run.mode})",
+        f"Execution attempt: {execution_attempt}",
+        "",
+        f"Current node JSON:\n{json.dumps(node.model_dump(), ensure_ascii=False, indent=2)}",
+        f"Editable task prompt override:\n{node.promptOverride.strip() if node.promptOverride else 'None'}",
+        f"Parent outputs JSON:\n{json.dumps(parent_outputs, ensure_ascii=False, indent=2)}",
+        f"Enabled references JSON:\n{json.dumps(enabled_refs, ensure_ascii=False, indent=2)}",
+        f"Node selected references JSON:\n{json.dumps(selected_refs, ensure_ascii=False, indent=2)}",
+        f"Enabled skills JSON:\n{json.dumps(enabled_skills, ensure_ascii=False, indent=2)}",
+        f"Effective model override: {node.modelOverride or node.model or 'global/default'}",
+        f"Failure output targets JSON:\n{json.dumps(feedback_targets, ensure_ascii=False, indent=2)}",
+    ]
+    if review_feedback:
+        parts.extend(
+            [
+                "",
+                "Previous independent review feedback JSON:",
+                json.dumps(review_feedback.model_dump(), ensure_ascii=False, indent=2),
+                "Revise this same node result to address the review feedback before returning the final result.",
+            ]
+        )
+    parts.extend(
         [
-            "Execute this workflow node and return a concise final result suitable for the workflow Stream panel.",
-            "If you create files, put them below artifacts/ or outputs/ and mention their paths.",
-            "Do not reveal chain-of-thought; summarize process and decisions only.",
-            "",
-            f"Project: {project.name}",
-            f"Project root: {project.root}",
-            f"Project goal:\n{project.goal}",
-            f"Run: {run.id} ({run.mode})",
-            "",
-            f"Current node JSON:\n{json.dumps(node.model_dump(), ensure_ascii=False, indent=2)}",
-            f"Editable task prompt override:\n{node.promptOverride.strip() if node.promptOverride else 'None'}",
-            f"Parent outputs JSON:\n{json.dumps(parent_outputs, ensure_ascii=False, indent=2)}",
-            f"Enabled references JSON:\n{json.dumps(enabled_refs, ensure_ascii=False, indent=2)}",
-            f"Node selected references JSON:\n{json.dumps(selected_refs, ensure_ascii=False, indent=2)}",
-            f"Enabled skills JSON:\n{json.dumps(enabled_skills, ensure_ascii=False, indent=2)}",
-            f"Effective model override: {node.modelOverride or node.model or 'global/default'}",
-            f"Failure output targets JSON:\n{json.dumps(feedback_targets, ensure_ascii=False, indent=2)}",
             "",
             "Final response requirements:",
             "- State what was done for this node.",
             "- List produced/updated artifacts with paths.",
             "- List any blockers or user decisions needed.",
             "- Keep it concise and directly actionable.",
-            (
-                "- Review decision: because this node is a review/feedback gate, end the final answer with "
-                "<workflow_review_decision>{\"decision\":\"pass|return\",\"targetNodeId\":\"feedback-target-id-or-null\",\"reason\":\"brief visible reason\"}</workflow_review_decision>. "
-                "Use decision='pass' only when the acceptance criteria are satisfied. Use decision='return' only with one of the listed failure target ids when revision or failure handling is needed."
-                if _node_requires_review_decision(workflow, node)
-                else ""
-            ),
+        ]
+    )
+    return "\n".join(parts)
+
+
+def _node_review_system_prompt(project: WorkflowProject, node: WorkflowNode) -> str:
+    return (
+        "You are an independent review subagent for Hermes Workflow. "
+        "Assess only the supplied node result, artifact metadata, file-change summaries, and review rules. "
+        "Do not edit files, do not create files, and do not ask for hidden reasoning. "
+        f"The project root is {project.root}."
+    )
+
+
+def _node_review_prompt(
+    project: WorkflowProject,
+    workflow: Workflow,
+    run: ExecutionRun,
+    node: WorkflowNode,
+    *,
+    final_text: str,
+    artifact: Artifact,
+    execution_attempt: int,
+) -> str:
+    feedback_targets = [
+        {
+            "edgeId": edge.id,
+            "targetNodeId": edge.target,
+            "targetTitle": _node_by_id(workflow, edge.target).title,
+            "targetType": _node_by_id(workflow, edge.target).type,
+            "label": edge.label,
+        }
+        for edge in _feedback_edges(workflow, node.id)
+    ]
+    return "\n".join(
+        [
+            "Independent workflow review: decide whether the node result satisfies the review rules.",
+            "Return only the tagged JSON decision described below.",
+            "",
+            f"Project: {project.name}",
+            f"Project goal:\n{project.goal}",
+            f"Run: {run.id} ({run.mode})",
+            f"Execution attempt: {execution_attempt}",
+            "",
+            f"Current node JSON:\n{json.dumps(node.model_dump(), ensure_ascii=False, indent=2)}",
+            f"Review rules JSON:\n{json.dumps(node.reviewRules.model_dump(), ensure_ascii=False, indent=2)}",
+            f"Failure output targets JSON:\n{json.dumps(feedback_targets, ensure_ascii=False, indent=2)}",
+            f"Artifact JSON:\n{json.dumps(artifact.model_dump(), ensure_ascii=False, indent=2)}",
+            f"File changes JSON:\n{json.dumps([change.model_dump() for change in node.fileChanges], ensure_ascii=False, indent=2)}",
+            f"Node result text:\n{final_text}",
+            "",
+            "Decision contract:",
+            "- Use decision='pass' only if the review rules are satisfied.",
+            "- Use decision='return' when the same task needs revision, or when a connected failure target should be used.",
+            "- For review/test/failure-output nodes, targetNodeId must be one listed failure target when returning.",
+            "- Use decision='needs_human' only when evidence is insufficient or no valid automatic route exists.",
+            "Respond exactly as: <workflow_review_decision>{\"decision\":\"pass|return|needs_human\",\"targetNodeId\":null,\"reason\":\"brief visible reason\"}</workflow_review_decision>",
         ]
     )
 
@@ -3402,6 +3707,7 @@ def _project_bundle(project_id: str, error: Optional[str] = None) -> ProjectBund
         skills=_load_skills(project),
         artifacts=_load_artifacts(project),
         snapshots=_list_snapshots(project),
+        rollbackBackupCommit=_rollback_backup_commit(project),
         latestRun=_load_run(project.currentRunId) if project.currentRunId else None,
         error=error,
     )
@@ -3587,11 +3893,15 @@ def _init_db(project: WorkflowProject) -> None:
         db.commit()
 
 
-def _connect(project: WorkflowProject) -> sqlite3.Connection:
+@contextmanager
+def _connect(project: WorkflowProject) -> Iterable[sqlite3.Connection]:
     _db_path(project).parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(str(_db_path(project)), timeout=30)
     db.row_factory = sqlite3.Row
-    return db
+    try:
+        yield db
+    finally:
+        db.close()
 
 
 def _append_event(project_id: str, event: StreamEvent, *, persist: bool = True) -> None:
@@ -3783,7 +4093,8 @@ def _git_init(root: Path) -> None:
 
 
 def _create_snapshot(project: WorkflowProject, label: str, reason: str) -> VersionSnapshot:
-    _git(project.root, "add", WORKFLOW_DIR, "references", "workflow", "artifacts", "outputs", "logs")
+    _git(project.root, "add", "-A", "--", *SNAPSHOT_MANAGED_PATHS)
+    _unstage_snapshot_runtime_sidecars(project)
     message = f"workflow: {label}"
     commit = None
     try:
@@ -3791,7 +4102,11 @@ def _create_snapshot(project: WorkflowProject, label: str, reason: str) -> Versi
         commit = _git(project.root, "rev-parse", "HEAD").strip()
     except HTTPException:
         commit = None
-    snapshot = VersionSnapshot(id=_new_id("snap"), label=label, reason=reason, commit=commit)
+    snapshot = (
+        _snapshot_from_commit(project, commit, reason=reason)
+        if commit
+        else VersionSnapshot(id=_new_id("snap"), label=label, reason=reason, commit=commit)
+    )
     _append_event(
         project.id,
         StreamEvent(
@@ -3813,26 +4128,348 @@ def _list_snapshots(project: WorkflowProject) -> List[VersionSnapshot]:
     if not git_dir.exists():
         return []
     try:
-        raw = _git(project.root, "log", "--pretty=format:%H%x1f%ct%x1f%s", "--", WORKFLOW_DIR)
+        raw = _git(project.root, "log", "--pretty=format:%H", "--", *SNAPSHOT_MANAGED_PATHS)
     except HTTPException:
         return []
     snapshots: List[VersionSnapshot] = []
     for line in raw.splitlines():
-        parts = line.split("\x1f")
-        if len(parts) != 3:
+        commit = line.strip()
+        if not commit:
             continue
-        commit, ts, subject = parts
-        label = subject.replace("workflow: ", "", 1)
-        snapshots.append(
-            VersionSnapshot(
-                id=f"snap_{commit[:12]}",
-                label=label,
-                reason="git_log",
-                commit=commit,
-                createdAt=float(ts),
+        try:
+            snapshots.append(_snapshot_from_commit(project, commit, reason="git_log"))
+        except HTTPException:
+            continue
+    return snapshots
+
+
+def _snapshot_from_commit(project: WorkflowProject, commit: str, *, reason: str) -> VersionSnapshot:
+    try:
+        info = _snapshot_commit_info(project, commit)
+    except HTTPException:
+        info = {
+            "commit": commit,
+            "parentCommit": None,
+            "createdAt": time.time(),
+            "authorName": "",
+            "authorEmail": "",
+            "subject": "",
+            "body": "",
+        }
+    file_count, insertions, deletions = _snapshot_commit_stats(project, info["commit"])
+    subject = info["subject"]
+    label = subject.replace("workflow: ", "", 1)
+    if not label:
+        label = f"Snapshot {info['commit'][:8]}"
+    return VersionSnapshot(
+        id=f"snap_{info['commit'][:12]}",
+        label=label,
+        reason=reason,
+        commit=info["commit"],
+        shortCommit=info["commit"][:8],
+        parentCommit=info["parentCommit"],
+        authorName=info["authorName"],
+        authorEmail=info["authorEmail"],
+        subject=subject,
+        body=info["body"],
+        fileCount=file_count,
+        insertions=insertions,
+        deletions=deletions,
+        createdAt=info["createdAt"],
+    )
+
+
+def _snapshot_detail(project: WorkflowProject, commit: str) -> VersionSnapshotDetail:
+    resolved = _resolve_snapshot_commit(project, commit)
+    snapshot = _snapshot_from_commit(project, resolved, reason="git_log")
+    files = _snapshot_file_changes(project, resolved)
+    return VersionSnapshotDetail(**snapshot.model_dump(), files=files)
+
+
+def _snapshot_commit_info(project: WorkflowProject, commit: str) -> Dict[str, Any]:
+    resolved = _resolve_snapshot_commit(project, commit)
+    raw = _git(
+        project.root,
+        "show",
+        "-s",
+        "--format=%H%x1f%P%x1f%ct%x1f%an%x1f%ae%x1f%s%x1f%b",
+        resolved,
+    )
+    parts = raw.split("\x1f", 6)
+    if len(parts) == 6:
+        parts.append("")
+    if len(parts) < 7:
+        raise HTTPException(status_code=500, detail="Unable to parse snapshot commit metadata")
+    full_commit, parents, timestamp, author_name, author_email, subject, body = parts
+    parent_commit = parents.split()[0] if parents.strip() else None
+    return {
+        "commit": full_commit,
+        "parentCommit": parent_commit,
+        "createdAt": float(timestamp or 0),
+        "authorName": author_name,
+        "authorEmail": author_email,
+        "subject": subject,
+        "body": body.strip(),
+    }
+
+
+def _snapshot_commit_stats(project: WorkflowProject, commit: str) -> tuple[int, int, int]:
+    try:
+        raw = _git(project.root, "show", "--shortstat", "--format=", commit, "--", *SNAPSHOT_MANAGED_PATHS)
+    except HTTPException:
+        return (0, 0, 0)
+    file_count = insertions = deletions = 0
+    file_match = re.search(r"(\d+)\s+files?\s+changed", raw)
+    insertion_match = re.search(r"(\d+)\s+insertions?\(\+\)", raw)
+    deletion_match = re.search(r"(\d+)\s+deletions?\(-\)", raw)
+    if file_match:
+        file_count = int(file_match.group(1))
+    if insertion_match:
+        insertions = int(insertion_match.group(1))
+    if deletion_match:
+        deletions = int(deletion_match.group(1))
+    return (file_count, insertions, deletions)
+
+
+def _snapshot_file_changes(project: WorkflowProject, commit: str) -> List[SnapshotFileChange]:
+    status_by_path = _snapshot_file_statuses(project, commit)
+    try:
+        raw = _git(project.root, "show", "--numstat", "--format=", commit, "--", *SNAPSHOT_MANAGED_PATHS)
+    except HTTPException:
+        return []
+    changes: List[SnapshotFileChange] = []
+    seen: set[str] = set()
+    for line in raw.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        insertions_raw, deletions_raw, path = parts[0], parts[1], parts[-1]
+        if _is_runtime_sidecar(path):
+            continue
+        is_binary = insertions_raw == "-" or deletions_raw == "-"
+        insertions = 0 if is_binary else int(insertions_raw or 0)
+        deletions = 0 if is_binary else int(deletions_raw or 0)
+        diff, truncated, diff_binary = _snapshot_file_diff(project, commit, path)
+        seen.add(path)
+        changes.append(
+            SnapshotFileChange(
+                path=path,
+                status=status_by_path.get(path, "modified"),
+                insertions=insertions,
+                deletions=deletions,
+                diff=diff,
+                truncated=truncated,
+                isBinary=is_binary or diff_binary,
             )
         )
-    return snapshots
+
+    for path, status in status_by_path.items():
+        if _is_runtime_sidecar(path):
+            continue
+        if path in seen:
+            continue
+        diff, truncated, is_binary = _snapshot_file_diff(project, commit, path)
+        changes.append(SnapshotFileChange(path=path, status=status, diff=diff, truncated=truncated, isBinary=is_binary))
+    return changes
+
+
+def _snapshot_file_statuses(project: WorkflowProject, commit: str) -> Dict[str, str]:
+    try:
+        raw = _git(project.root, "show", "--name-status", "--format=", commit, "--", *SNAPSHOT_MANAGED_PATHS)
+    except HTTPException:
+        return {}
+    statuses: Dict[str, str] = {}
+    labels = {
+        "A": "added",
+        "C": "copied",
+        "D": "deleted",
+        "M": "modified",
+        "R": "renamed",
+        "T": "type_changed",
+        "U": "unmerged",
+        "X": "unknown",
+    }
+    for line in raw.splitlines():
+        parts = line.split("\t")
+        if len(parts) < 2:
+            continue
+        code = parts[0].strip()
+        path = parts[-1].strip()
+        if path:
+            statuses[path] = labels.get(code[:1], code.lower() or "modified")
+    return statuses
+
+
+def _snapshot_file_diff(project: WorkflowProject, commit: str, path: str) -> tuple[str, bool, bool]:
+    try:
+        diff = _git(project.root, "show", "--format=", "--find-renames", commit, "--", path)
+    except HTTPException:
+        return ("", False, False)
+    is_binary = _is_git_binary_diff(diff)
+    if len(diff) <= SNAPSHOT_DIFF_MAX_CHARS:
+        return (diff, False, is_binary)
+    return (_truncate_text(diff, SNAPSHOT_DIFF_MAX_CHARS), True, is_binary)
+
+
+def _resolve_snapshot_commit(project: WorkflowProject, commit: str) -> str:
+    candidate = str(commit or "").strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{7,40}", candidate):
+        raise HTTPException(status_code=422, detail="Snapshot commit must be a Git SHA")
+    try:
+        resolved = _git(project.root, "rev-parse", "--verify", f"{candidate}^{{commit}}").strip()
+    except HTTPException as exc:
+        raise HTTPException(status_code=404, detail="Snapshot commit not found") from exc
+    return resolved
+
+
+def _restore_snapshot(project: WorkflowProject, commit: str) -> ProjectBundle:
+    target_commit = _resolve_snapshot_commit(project, commit)
+    _ensure_snapshot_restore_allowed(project)
+    backup_snapshot = _create_snapshot(project, "Pre-rollback backup", "pre_rollback")
+    if not backup_snapshot.commit:
+        raise HTTPException(status_code=500, detail="Unable to create pre-rollback backup snapshot")
+    _git(project.root, "branch", "-f", ROLLBACK_BACKUP_BRANCH, backup_snapshot.commit)
+    restored_paths = _restore_snapshot_paths(project, target_commit)
+    restored_project = _load_project(project.id)
+    normalized_run = _normalize_restored_run_state(restored_project)
+    _append_event(
+        restored_project.id,
+        StreamEvent(
+            id=_new_id("evt"),
+            projectId=restored_project.id,
+            runId=normalized_run.id if normalized_run else restored_project.currentRunId,
+            type="snapshot",
+            label="快照已恢复",
+            summary=f"已从 {target_commit[:8]} 恢复 workflow 快照文件，回滚前状态已覆盖保存到 {ROLLBACK_BACKUP_BRANCH}。",
+            details={
+                "targetCommit": target_commit,
+                "backupBranch": ROLLBACK_BACKUP_BRANCH,
+                "backupCommit": backup_snapshot.commit,
+                "restoredPaths": restored_paths,
+                "normalizedRun": normalized_run.model_dump() if normalized_run else None,
+            },
+            status="warning",
+        ),
+    )
+    _create_snapshot(restored_project, f"Rollback to {target_commit[:8]}", "rollback_restore")
+    return _project_bundle(restored_project.id)
+
+
+def _ensure_snapshot_restore_allowed(project: WorkflowProject) -> None:
+    if not project.currentRunId:
+        return
+    try:
+        run = _load_run(project.currentRunId)
+    except HTTPException:
+        return
+    if run.status in ACTIVE_ROLLBACK_BLOCKING_STATUSES:
+        raise HTTPException(status_code=409, detail="Stop the active workflow run before restoring a snapshot")
+
+
+def _restore_snapshot_paths(project: WorkflowProject, commit: str) -> List[str]:
+    root = Path(project.root).resolve()
+    current_files = _snapshot_tracked_files(project, "HEAD")
+    target_files = _snapshot_tracked_files(project, commit)
+    for rel_file in sorted(current_files - target_files):
+        target = (root / rel_file).resolve()
+        if root not in target.parents:
+            raise HTTPException(status_code=500, detail=f"Unsafe snapshot restore file: {rel_file}")
+        if target.exists() and target.is_file():
+            _unlink_snapshot_file_with_retries(target)
+    for rel_file in sorted(target_files):
+        _checkout_snapshot_file_with_retries(project, commit, rel_file)
+    for rel_path in SNAPSHOT_MANAGED_PATHS:
+        (root / rel_path).mkdir(parents=True, exist_ok=True)
+    return [path for path in SNAPSHOT_MANAGED_PATHS if any(file == path or file.startswith(f"{path}/") for file in target_files)]
+
+
+def _unlink_snapshot_file_with_retries(path: Path) -> None:
+    for attempt in range(8):
+        try:
+            path.unlink()
+            return
+        except PermissionError:
+            if attempt == 7:
+                raise
+            time.sleep(0.15)
+
+
+def _checkout_snapshot_file_with_retries(project: WorkflowProject, commit: str, rel_file: str) -> None:
+    for attempt in range(8):
+        try:
+            _git(project.root, "checkout", commit, "--", rel_file)
+            return
+        except HTTPException as exc:
+            detail = str(exc.detail)
+            if "unable to unlink old" not in detail or attempt == 7:
+                raise
+            time.sleep(0.15)
+
+
+def _snapshot_tracked_files(project: WorkflowProject, commit: str) -> set[str]:
+    try:
+        raw = _git(project.root, "ls-tree", "-r", "--name-only", commit, "--", *SNAPSHOT_MANAGED_PATHS)
+    except HTTPException:
+        return set()
+    return {
+        path
+        for path in (line.strip().replace("\\", "/") for line in raw.splitlines() if line.strip())
+        if not _is_runtime_sidecar(path)
+    }
+
+
+def _is_runtime_sidecar(path: str) -> bool:
+    lowered = str(path or "").replace("\\", "/").lower()
+    return lowered.endswith(("-wal", "-shm", ".db-wal", ".db-shm", ".sqlite-wal", ".sqlite-shm"))
+
+
+def _unstage_snapshot_runtime_sidecars(project: WorkflowProject) -> None:
+    pathspecs = (
+        f":(glob){WORKFLOW_DIR}/**/*.db-wal",
+        f":(glob){WORKFLOW_DIR}/**/*.db-shm",
+        f":(glob){WORKFLOW_DIR}/**/*.sqlite-wal",
+        f":(glob){WORKFLOW_DIR}/**/*.sqlite-shm",
+    )
+    for pathspec in pathspecs:
+        try:
+            _git(project.root, "restore", "--staged", "--", pathspec)
+        except HTTPException:
+            continue
+
+
+def _snapshot_path_exists_at_commit(project: WorkflowProject, commit: str, rel_path: str) -> bool:
+    try:
+        _git(project.root, "cat-file", "-e", f"{commit}:{rel_path}")
+        return True
+    except HTTPException:
+        return False
+
+
+def _normalize_restored_run_state(project: WorkflowProject) -> Optional[ExecutionRun]:
+    if not project.currentRunId:
+        return None
+    try:
+        run = _load_run(project.currentRunId)
+    except HTTPException:
+        return None
+    if run.status not in ACTIVE_ROLLBACK_BLOCKING_STATUSES:
+        return run
+    _runtime.stop(run.id)
+    run.status = "stopped"
+    run.currentNodeId = None
+    run.completedAt = time.time()
+    run.updatedAt = run.completedAt
+    _save_run(run)
+    return run
+
+
+def _rollback_backup_commit(project: WorkflowProject) -> Optional[str]:
+    try:
+        return _git(project.root, "rev-parse", "--verify", f"{ROLLBACK_BACKUP_BRANCH}^{{commit}}").strip()
+    except HTTPException:
+        return None
 
 
 def _git(root: str | Path, *args: str) -> str:

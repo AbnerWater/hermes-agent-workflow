@@ -55,10 +55,12 @@ import {
   getSkills,
   getWorkflowFiles,
   getWorkflowProject,
+  getWorkflowSnapshotDetail,
   listWorkflowEvents,
   listWorkflowProjects,
   passWorkflowNode,
   pauseWorkflowRun,
+  restoreWorkflowSnapshot,
   retryWorkflowNode,
   saveWorkflow,
   sendWorkflowChat,
@@ -82,8 +84,10 @@ import type {
   ReferenceItem,
   ReviewDecision,
   SkillBinding,
+  SnapshotFileChange,
   StreamEvent,
   VersionSnapshot,
+  VersionSnapshotDetail,
   Workflow,
   WorkflowComposerCompletionItem,
   WorkflowEdge,
@@ -99,6 +103,17 @@ import type {
 
 import { type WorkflowCopy, workflowCopyFor } from './i18n'
 import { applyWorkflowProjectChange, dispatchWorkflowProjectsChanged } from './project-events'
+import {
+  applyWorkflowRetryLimit,
+  canRestoreWorkflowSnapshot,
+  isSnapshotDetailApiReady,
+  latestWorkflowRuntimeNodeId,
+  reviewRulesFromDraft,
+  reviewRulesToDraft,
+  runtimeNodeTitle,
+  snapshotChangeSummary,
+  snapshotShortCommit
+} from './workflow-helpers'
 import { NEW_CHAT_ROUTE } from '../routes'
 
 type DrawerMode = 'files' | 'references' | 'skills' | 'snapshots' | 'task'
@@ -116,6 +131,7 @@ interface WorkflowIntakeReference {
 type FlowNode = Node<WorkflowNodeData, 'workflow'>
 type FlowEdge = Edge<{ kind: string }>
 
+const ROLLBACK_BACKUP_BRANCH_LABEL = 'workflow-rollback-backup'
 const STATUS_TONE: Record<WorkflowNodeStatus, string> = {
   aborted: 'danger',
   completed: 'success',
@@ -275,6 +291,7 @@ function WorkflowWorkbench() {
   const [streamExpanded, setStreamExpanded] = useState(false)
   const [filterSelectedNode, setFilterSelectedNode] = useState(false)
   const [executionMode, setExecutionMode] = useState<ExecutionMode>('semi_auto')
+  const [retryLimitDraft, setRetryLimitDraft] = useState('1')
   const [streamEvents, setStreamEvents] = useState<StreamEvent[]>([])
   const [wsHealthy, setWsHealthy] = useState(false)
   const [flowNodes, setFlowNodes, onNodesChangeBase] = useNodesState<FlowNode>([])
@@ -416,6 +433,16 @@ function WorkflowWorkbench() {
     () => workflow?.nodes.find(node => node.id === runtimeNodeId) ?? null,
     [runtimeNodeId, workflow]
   )
+
+  useEffect(() => {
+    if (!workflow?.nodes.length) {
+      setRetryLimitDraft('1')
+      return
+    }
+
+    const maxRetries = Math.max(...workflow.nodes.map(node => node.maxRetries ?? 0))
+    setRetryLimitDraft(String(maxRetries))
+  }, [activeProjectId, workflow?.id])
 
   useEffect(() => {
     const latest = streamEvents.at(-1)
@@ -604,6 +631,11 @@ function WorkflowWorkbench() {
     onSuccess: () => invalidateProject()
   })
 
+  const restoreSnapshotMutation = useMutation({
+    mutationFn: (commit: string) => restoreWorkflowSnapshot(activeProjectId!, commit),
+    onSuccess: data => invalidateProject(data.project.id)
+  })
+
   const onNodesChange = useCallback<OnNodesChange<FlowNode>>(
     changes => {
       onNodesChangeBase(changes)
@@ -684,6 +716,19 @@ function WorkflowWorkbench() {
     [saveWorkflowMutation, workflow]
   )
 
+  const applyRetryLimitConfig = useCallback(() => {
+    if (!workflow) {
+      return
+    }
+
+    const retryLimit = Math.max(0, Math.floor(Number(retryLimitDraft) || 0))
+    setRetryLimitDraft(String(retryLimit))
+    saveWorkflowMutation.mutate({
+      nextWorkflow: applyWorkflowRetryLimit(workflow, retryLimit),
+      snapshotLabel: `Workflow retry limit updated: ${retryLimit}`
+    })
+  }, [retryLimitDraft, saveWorkflowMutation, workflow])
+
   const followRuntimeNode = useCallback(() => {
     setAutoFollowRunNode(true)
 
@@ -708,6 +753,7 @@ function WorkflowWorkbench() {
     pauseMutation.isPending ||
     stopMutation.isPending ||
     nodeActionMutation.isPending ||
+    restoreSnapshotMutation.isPending ||
     slashMutation.isPending ||
     composerAttachmentMutation.isPending
 
@@ -731,7 +777,10 @@ function WorkflowWorkbench() {
             }}
             onStop={() => activeRun && stopMutation.mutate(activeRun.id)}
             project={bundle?.project ?? null}
-            selectedNode={selectedNode}
+            retryLimitDraft={retryLimitDraft}
+            runtimeNode={runtimeNode}
+            onApplyRetryLimit={applyRetryLimitConfig}
+            onRetryLimitChange={setRetryLimitDraft}
           />
 
           <div className="workflow-main">
@@ -742,7 +791,6 @@ function WorkflowWorkbench() {
                 executionMode={executionMode}
                 onFollowRuntimeNode={followRuntimeNode}
                 runtimeNode={runtimeNode}
-                selectedNode={selectedNode}
                 workflow={workflow}
               />
               {bundleQuery.isLoading || projectsQuery.isLoading ? (
@@ -819,7 +867,6 @@ function WorkflowWorkbench() {
               drawerMode === 'snapshots') && (
               <RightDrawer
                 activeRun={activeRun}
-                artifacts={bundle?.artifacts ?? []}
                 availableSkills={availableSkillsQuery.data ?? []}
                 files={filesQuery.data?.tree ?? []}
                 filesLoading={filesQuery.isLoading}
@@ -847,6 +894,7 @@ function WorkflowWorkbench() {
                 onOpenFile={openPath}
                 onSaveNode={saveNodeConfig}
                 onSelectFile={setSelectedFilePath}
+                onRestoreSnapshot={commit => restoreSnapshotMutation.mutate(commit)}
                 onSnapshot={() => snapshotMutation.mutate()}
                 onToggleReference={(reference, enabled) => {
                   const references = (bundle?.references ?? []).map(item =>
@@ -861,9 +909,13 @@ function WorkflowWorkbench() {
                   skillsMutation.mutate(skills)
                 }}
                 references={bundle?.references ?? []}
+                projectId={activeProjectId}
                 root={bundle?.project.root}
+                rollbackBackupCommit={bundle?.rollbackBackupCommit ?? null}
+                restoringSnapshotCommit={restoreSnapshotMutation.isPending ? (restoreSnapshotMutation.variables ?? null) : null}
                 selectedFilePath={selectedFilePath}
                 skills={bundle?.skills.length ? bundle.skills : DEFAULT_SKILLS}
+                snapshotApiVersion={bundle?.snapshotApiVersion ?? null}
                 snapshots={bundle?.snapshots ?? []}
                 workflow={workflow}
               />
@@ -879,33 +931,40 @@ function ExecutionToolbar({
   activeRun,
   busy,
   executionMode,
+  onApplyRetryLimit,
   onModeChange,
   onPause,
+  onRetryLimitChange,
   onRun,
   onStop,
   project,
-  selectedNode
+  retryLimitDraft,
+  runtimeNode
 }: {
   activeRun: ProjectBundle['latestRun']
   busy: boolean
   executionMode: ExecutionMode
+  onApplyRetryLimit: () => void
   onModeChange: (mode: ExecutionMode) => void
   onPause: () => void
+  onRetryLimitChange: (value: string) => void
   onRun: () => void
   onStop: () => void
   project: ProjectBundle['project'] | null
-  selectedNode: WorkflowNode | null
+  retryLimitDraft: string
+  runtimeNode: WorkflowNode | null
 }) {
   const copy = useWorkflowCopy()
   const running = activeRun?.status === 'running'
+  const subtitle = activeRun
+    ? `${copy.currentNodePrefix}${runtimeNodeTitle(runtimeNode, copy.noCurrentExecutionNode)}`
+    : (project?.root ?? copy.workflowStartHint)
 
   return (
     <section aria-label="Workflow execution controls" className="workflow-execution-toolbar">
       <div className="workflow-execution-toolbar__identity">
         <div className="workflow-title">{project?.name ?? 'hermes-workflow'}</div>
-        <div className="workflow-subtitle">
-          {selectedNode ? `${copy.currentNodePrefix}${selectedNode.title}` : (project?.root ?? copy.workflowStartHint)}
-        </div>
+        <div className="workflow-subtitle">{subtitle}</div>
       </div>
 
       <div className="workflow-execution-toolbar__controls">
@@ -919,6 +978,21 @@ function ExecutionToolbar({
             <SelectItem value="auto">{copy.mode.auto}</SelectItem>
           </SelectContent>
         </Select>
+
+        <div className="workflow-retry-limit-control">
+          <span>{copy.retryLimit}</span>
+          <Input
+            aria-label={copy.retryLimit}
+            min={0}
+            onChange={event => onRetryLimitChange(event.target.value)}
+            step={1}
+            type="number"
+            value={retryLimitDraft}
+          />
+          <Button disabled={!project || busy || running} onClick={onApplyRetryLimit} size="sm" type="button" variant="outline">
+            {copy.applyRetryLimit}
+          </Button>
+        </div>
 
         <Button disabled={!project || busy || running} onClick={onRun} size="sm" type="button">
           <Codicon name="play" size="0.875rem" />
@@ -948,14 +1022,12 @@ function WorkflowStatusOverlay({
   executionMode,
   onFollowRuntimeNode,
   runtimeNode,
-  selectedNode,
   workflow
 }: {
   activeRun: ProjectBundle['latestRun']
   executionMode: ExecutionMode
   onFollowRuntimeNode: () => void
   runtimeNode: WorkflowNode | null
-  selectedNode: WorkflowNode | null
   workflow: Workflow | null
 }) {
   const copy = useWorkflowCopy()
@@ -963,7 +1035,6 @@ function WorkflowStatusOverlay({
   const waiting = activeRun?.status === 'waiting_user_confirm'
   const completed = workflow ? workflow.nodes.filter(node => node.status === 'completed').length : 0
   const total = workflow?.nodes.length ?? 0
-  const displayedNode = runtimeNode ?? selectedNode
 
   return (
     <div aria-label="Workflow execution status" className="workflow-status-overlay">
@@ -981,9 +1052,7 @@ function WorkflowStatusOverlay({
           <strong>{runtimeNode.title}</strong>
         </button>
       ) : (
-        <strong title={displayedNode?.title ?? undefined}>
-          {displayedNode ? displayedNode.title : copy.noNodeSelected}
-        </strong>
+        <strong>{runtimeNodeTitle(null, copy.noCurrentExecutionNode)}</strong>
       )}
     </div>
   )
@@ -1183,7 +1252,6 @@ function FileTreeItem({
 
 function RightDrawer({
   activeRun,
-  artifacts,
   availableSkills,
   files,
   filesLoading,
@@ -1195,18 +1263,22 @@ function RightDrawer({
   onSaveNode,
   onSelectFile,
   onNodeAction,
+  onRestoreSnapshot,
   onSnapshot,
   onToggleReference,
   onToggleSkill,
+  projectId,
   references,
   root,
+  rollbackBackupCommit,
+  restoringSnapshotCommit,
   selectedFilePath,
   skills,
+  snapshotApiVersion,
   snapshots,
   workflow
 }: {
   activeRun: ProjectBundle['latestRun']
-  artifacts: ProjectBundle['artifacts']
   availableSkills: SkillInfo[]
   files: WorkflowFileNode[]
   filesLoading: boolean
@@ -1224,13 +1296,18 @@ function RightDrawer({
     runId: string,
     payload?: { reason?: string; targetNodeId?: string }
   ) => void
+  onRestoreSnapshot: (commit: string) => void
   onSnapshot: () => void
   onToggleReference: (reference: ReferenceItem, enabled: boolean) => void
   onToggleSkill: (skill: SkillBinding, enabled: boolean) => void
+  projectId: string | null
   references: ReferenceItem[]
   root?: string
+  rollbackBackupCommit: string | null
+  restoringSnapshotCommit: string | null
   selectedFilePath: string | null
   skills: SkillBinding[]
+  snapshotApiVersion: number | null
   snapshots: VersionSnapshot[]
   workflow: Workflow | null
 }) {
@@ -1267,7 +1344,6 @@ function RightDrawer({
       {mode === 'task' && (
         <TaskDetailDrawer
           activeRun={activeRun}
-          artifacts={artifacts}
           availableSkills={availableSkills}
           modelOptions={modelOptions}
           node={node}
@@ -1298,14 +1374,24 @@ function RightDrawer({
         />
       )}
       {mode === 'skills' && <SkillDrawer onToggleSkill={onToggleSkill} skills={skills} />}
-      {mode === 'snapshots' && <SnapshotDrawer onSnapshot={onSnapshot} snapshots={snapshots} />}
+      {mode === 'snapshots' && (
+        <SnapshotDrawer
+          activeRun={activeRun}
+          onRestoreSnapshot={onRestoreSnapshot}
+          onSnapshot={onSnapshot}
+          projectId={projectId}
+          rollbackBackupCommit={rollbackBackupCommit}
+          restoringSnapshotCommit={restoringSnapshotCommit}
+          snapshotApiVersion={snapshotApiVersion}
+          snapshots={snapshots}
+        />
+      )}
     </aside>
   )
 }
 
 function TaskDetailDrawer({
   activeRun,
-  artifacts,
   availableSkills,
   modelOptions,
   node,
@@ -1317,7 +1403,6 @@ function TaskDetailDrawer({
   workflow
 }: {
   activeRun: ProjectBundle['latestRun']
-  artifacts: ProjectBundle['artifacts']
   availableSkills: SkillInfo[]
   modelOptions: ModelOptionsResponse | null
   node: WorkflowNode | null
@@ -1341,6 +1426,9 @@ function TaskDetailDrawer({
   const [openFilePreviews, setOpenFilePreviews] = useState<Set<string>>(new Set())
   const [promptEditing, setPromptEditing] = useState(false)
   const [promptDraft, setPromptDraft] = useState('')
+  const [reviewRulesEditing, setReviewRulesEditing] = useState(false)
+  const [reviewRulesDraft, setReviewRulesDraft] = useState('')
+  const [reviewRulesRequiredDraft, setReviewRulesRequiredDraft] = useState(false)
   const [returnTargetId, setReturnTargetId] = useState('')
 
   const failureTargets = useMemo(() => {
@@ -1365,6 +1453,9 @@ function TaskDetailDrawer({
     setOpenFilePreviews(new Set())
     setPromptEditing(false)
     setPromptDraft(node?.promptOverride || node?.description || '')
+    setReviewRulesEditing(false)
+    setReviewRulesDraft(node ? reviewRulesToDraft(node.reviewRules) : '')
+    setReviewRulesRequiredDraft(Boolean(node?.reviewRules.required))
     setReturnTargetId('')
   }, [node])
 
@@ -1391,10 +1482,6 @@ function TaskDetailDrawer({
   const status = statusMeta(copy, node.status)
   const runId = activeRun?.id ?? null
   const waiting = Boolean(runId && node.status === 'waiting_user_confirm')
-
-  const nodeArtifacts = artifacts.filter(
-    artifact => artifact.nodeId === node.id || node.artifacts.includes(artifact.path)
-  )
 
   const modelChoices = flattenModelChoices(modelOptions)
   const references = editable.references ?? []
@@ -1463,6 +1550,29 @@ function TaskDetailDrawer({
     setPromptEditing(false)
   }
 
+  const beginReviewRulesEditing = () => {
+    setReviewRulesDraft(reviewRulesToDraft(editable.reviewRules))
+    setReviewRulesRequiredDraft(Boolean(editable.reviewRules.required))
+    setReviewRulesEditing(true)
+  }
+
+  const cancelReviewRulesEditing = () => {
+    setReviewRulesDraft(reviewRulesToDraft(editable.reviewRules))
+    setReviewRulesRequiredDraft(Boolean(editable.reviewRules.required))
+    setReviewRulesEditing(false)
+  }
+
+  const confirmReviewRulesEditing = () => {
+    const nextNode = {
+      ...editable,
+      reviewRules: reviewRulesFromDraft(reviewRulesRequiredDraft, reviewRulesDraft)
+    }
+
+    setDraft(nextNode)
+    onSaveNode(nextNode)
+    setReviewRulesEditing(false)
+  }
+
   return (
     <div className="workflow-task-detail">
       <div className="workflow-drawer-header">
@@ -1520,42 +1630,95 @@ function TaskDetailDrawer({
         </section>
 
         <section>
-          <h3>{copy.context}</h3>
-          <div className="workflow-key-values">
-            <span>{copy.type}</span>
-            <strong>{copy.nodeType[node.type as keyof typeof copy.nodeType] ?? node.type}</strong>
-            <span>{copy.model}</span>
-            <strong>{editable.modelOverride ?? editable.model ?? copy.globalModel}</strong>
-            <span>{copy.skills}</span>
-            <strong>
-              {editable.skillMode === 'manual' ? `${editable.skills.length} ${copy.manualSkillsSummary}` : 'auto'}
-            </strong>
-            <span>{copy.retry}</span>
-            <strong>
-              {node.retryCount}/{node.maxRetries}
-            </strong>
+          <div className="workflow-section-header">
+            <h3>{copy.reviewRules}</h3>
+            {!reviewRulesEditing && (
+              <Button onClick={beginReviewRulesEditing} size="xs" type="button" variant="outline">
+                <Codicon name="edit" size="0.8125rem" />
+                {copy.edit}
+              </Button>
+            )}
           </div>
-        </section>
-
-        {reviewDecision && (
-          <section className="workflow-review-decision">
-            <h3>{copy.reviewDecision}</h3>
-            <div className="workflow-key-values">
-              <span>{copy.reviewDecisionStatus}</span>
-              <strong>{reviewDecisionLabel(copy, reviewDecision.decision)}</strong>
-              {reviewDecision.targetNodeId ? (
-                <>
-                  <span>{copy.failureTarget}</span>
-                  <strong>
-                    {workflow?.nodes.find(candidate => candidate.id === reviewDecision.targetNodeId)?.title ??
-                      reviewDecision.targetNodeId}
-                  </strong>
-                </>
-              ) : null}
+          {reviewRulesEditing ? (
+            <div className="workflow-prompt-editor-panel">
+              <label className="workflow-toggle-row">
+                <span>
+                  <strong>{copy.reviewRulesRequired}</strong>
+                  <small>{copy.reviewRulesRequiredHint}</small>
+                </span>
+                <Switch checked={reviewRulesRequiredDraft} onCheckedChange={setReviewRulesRequiredDraft} />
+              </label>
+              <Textarea
+                className="workflow-prompt-editor"
+                onChange={event => setReviewRulesDraft(event.target.value)}
+                placeholder={copy.reviewRulesPlaceholder}
+                value={reviewRulesDraft}
+              />
+              <div className="workflow-prompt-editor-actions">
+                <Button
+                  aria-label={copy.cancelReviewRulesEditing}
+                  onClick={cancelReviewRulesEditing}
+                  size="xs"
+                  type="button"
+                  variant="outline"
+                >
+                  {copy.cancel}
+                </Button>
+                <Button
+                  aria-label={copy.confirmReviewRulesChanges}
+                  onClick={confirmReviewRulesEditing}
+                  size="xs"
+                  type="button"
+                >
+                  <Codicon name="check" size="0.8125rem" />
+                  {copy.confirm}
+                </Button>
+              </div>
             </div>
-            {reviewDecision.reason ? <p>{reviewDecision.reason}</p> : null}
-          </section>
-        )}
+          ) : (
+            <div className="workflow-review-rules-display">
+              <div className="workflow-key-values">
+                <span>{copy.reviewRulesRequired}</span>
+                <strong>{editable.reviewRules.required ? copy.reviewRulesEnabled : copy.reviewRulesOptional}</strong>
+                <span>{copy.retry}</span>
+                <strong>
+                  {node.retryCount}/{node.maxRetries}
+                </strong>
+              </div>
+              <ul className="workflow-checklist">
+                {editable.reviewRules.checklist.length ? (
+                  editable.reviewRules.checklist.map(item => (
+                    <li key={item}>
+                      <Codicon name="check" size="0.75rem" />
+                      {item}
+                    </li>
+                  ))
+                ) : (
+                  <li>{copy.noExplicitReviewRules}</li>
+                )}
+              </ul>
+            </div>
+          )}
+          {reviewDecision && (
+            <div className="workflow-review-decision">
+              <h3>{copy.reviewDecision}</h3>
+              <div className="workflow-key-values">
+                <span>{copy.reviewDecisionStatus}</span>
+                <strong>{reviewDecisionLabel(copy, reviewDecision.decision)}</strong>
+                {reviewDecision.targetNodeId ? (
+                  <>
+                    <span>{copy.failureTarget}</span>
+                    <strong>
+                      {workflow?.nodes.find(candidate => candidate.id === reviewDecision.targetNodeId)?.title ??
+                        reviewDecision.targetNodeId}
+                    </strong>
+                  </>
+                ) : null}
+              </div>
+              {reviewDecision.reason ? <p>{reviewDecision.reason}</p> : null}
+            </div>
+          )}
+        </section>
 
         <section>
           <h3>{copy.executionModel}</h3>
@@ -1682,38 +1845,6 @@ function TaskDetailDrawer({
               )}
             </div>
           )}
-        </section>
-
-        <section>
-          <h3>Review Rules</h3>
-          <ul className="workflow-checklist">
-            {node.reviewRules.checklist.length ? (
-              node.reviewRules.checklist.map(item => (
-                <li key={item}>
-                  <Codicon name="check" size="0.75rem" />
-                  {item}
-                </li>
-              ))
-            ) : (
-              <li>{copy.noExplicitReviewRules}</li>
-            )}
-          </ul>
-        </section>
-
-        <section>
-          <h3>Artifacts</h3>
-          <div className="workflow-artifacts">
-            {nodeArtifacts.length ? (
-              nodeArtifacts.map(artifact => (
-                <div className="workflow-artifact-row" key={artifact.id}>
-                  <Codicon name="file-code" size="0.8125rem" />
-                  <span title={artifact.path}>{artifact.name}</span>
-                </div>
-              ))
-            ) : (
-              <div className="workflow-muted">{copy.noArtifacts}</div>
-            )}
-          </div>
         </section>
 
         <section>
@@ -1962,8 +2093,69 @@ function SkillDrawer({
   )
 }
 
-function SnapshotDrawer({ onSnapshot, snapshots }: { onSnapshot: () => void; snapshots: VersionSnapshot[] }) {
+function SnapshotDrawer({
+  activeRun,
+  onRestoreSnapshot,
+  onSnapshot,
+  projectId,
+  rollbackBackupCommit,
+  restoringSnapshotCommit,
+  snapshotApiVersion,
+  snapshots
+}: {
+  activeRun: ProjectBundle['latestRun']
+  onRestoreSnapshot: (commit: string) => void
+  onSnapshot: () => void
+  projectId: string | null
+  rollbackBackupCommit: string | null
+  restoringSnapshotCommit: string | null
+  snapshotApiVersion: number | null
+  snapshots: VersionSnapshot[]
+}) {
   const copy = useWorkflowCopy()
+  const [expandedCommit, setExpandedCommit] = useState<string | null>(snapshots[0]?.commit ?? null)
+  const canRestore = canRestoreWorkflowSnapshot(activeRun)
+  const snapshotApiReady = isSnapshotDetailApiReady(snapshotApiVersion)
+  useEffect(() => {
+    if (expandedCommit && snapshots.some(snapshot => snapshot.commit === expandedCommit)) {
+      return
+    }
+
+    setExpandedCommit(snapshots[0]?.commit ?? null)
+  }, [expandedCommit, snapshots])
+
+  const snapshotDetailQuery = useQuery({
+    enabled: Boolean(snapshotApiReady && projectId && expandedCommit),
+    queryFn: () => getWorkflowSnapshotDetail(projectId!, expandedCommit!),
+    queryKey: ['workflow-snapshot-detail', projectId, expandedCommit],
+    retry: false,
+    staleTime: 15_000
+  })
+
+  const restoreSnapshot = (snapshot: VersionSnapshot) => {
+    if (!snapshot.commit) {
+      window.alert(copy.snapshotRestoreUnavailable)
+      return
+    }
+
+    if (!canRestore) {
+      window.alert(copy.snapshotRestoreBlocked)
+      return
+    }
+
+    const confirmed = window.confirm(
+      [
+        copy.snapshotRestoreConfirm,
+        '',
+        `${copy.snapshotCommit}: ${snapshotShortCommit(snapshot)}`,
+        `${copy.snapshotBackupBranch}: ${ROLLBACK_BACKUP_BRANCH_LABEL}`
+      ].join('\n')
+    )
+
+    if (confirmed) {
+      onRestoreSnapshot(snapshot.commit)
+    }
+  }
 
   return (
     <div>
@@ -1971,6 +2163,9 @@ function SnapshotDrawer({ onSnapshot, snapshots }: { onSnapshot: () => void; sna
         <div>
           <h2>{copy.snapshots}</h2>
           <p>{copy.snapshotsHint}</p>
+          <small className="workflow-snapshot-backup">
+            {copy.snapshotBackupBranch}: {rollbackBackupCommit ? rollbackBackupCommit.slice(0, 8) : copy.snapshotNoCommit}
+          </small>
         </div>
         <Button onClick={onSnapshot} size="xs" type="button" variant="outline">
           <Codicon name="git-commit" size="0.8125rem" />
@@ -1979,19 +2174,142 @@ function SnapshotDrawer({ onSnapshot, snapshots }: { onSnapshot: () => void; sna
       </div>
       <div className="workflow-snapshot-list">
         {snapshots.length ? (
-          snapshots.map(snapshot => (
-            <div className="workflow-snapshot-row" key={snapshot.id}>
-              <Codicon name="git-commit" size="0.8125rem" />
-              <span>
-                <strong>{snapshot.label}</strong>
-                <small>{formatDate(snapshot.createdAt)}</small>
-              </span>
-            </div>
-          ))
+          snapshots.map(snapshot => {
+            const shortCommit = snapshotShortCommit(snapshot)
+            const expanded = Boolean(snapshot.commit && snapshot.commit === expandedCommit)
+            const detail = expanded ? snapshotDetailQuery.data?.snapshot : null
+            const restoring = Boolean(snapshot.commit && restoringSnapshotCommit === snapshot.commit)
+
+            return (
+              <div className="workflow-snapshot-item" key={snapshot.id}>
+                <div className="workflow-snapshot-row">
+                  <button
+                    aria-expanded={expanded}
+                    className="workflow-snapshot-row__main"
+                    disabled={!snapshot.commit}
+                    onClick={() => setExpandedCommit(current => (current === snapshot.commit ? null : snapshot.commit))}
+                    type="button"
+                  >
+                    <Codicon name={expanded ? 'chevron-down' : 'chevron-right'} size="0.8125rem" />
+                    <span>
+                      <strong>{snapshot.label}</strong>
+                      <small>{formatDate(snapshot.createdAt)}</small>
+                    </span>
+                  </button>
+                  <div className="workflow-snapshot-row__meta">
+                    <span>{shortCommit || copy.snapshotNoCommit}</span>
+                    <small>{snapshotChangeSummary(snapshot, copy.snapshotStatsUnavailable)}</small>
+                  </div>
+                  <Button
+                    disabled={!snapshot.commit || restoring}
+                    onClick={() => restoreSnapshot(snapshot)}
+                    size="xs"
+                    title={canRestore ? copy.snapshotRestore : copy.snapshotRestoreBlocked}
+                    type="button"
+                    variant="outline"
+                  >
+                    <Codicon name="history" size="0.75rem" />
+                    {restoring ? copy.snapshotRestoreInProgress : copy.snapshotRestore}
+                  </Button>
+                </div>
+                {expanded && (
+                  <SnapshotDetailPanel
+                    detail={detail ?? null}
+                    error={snapshotDetailQuery.isError}
+                    loading={snapshotDetailQuery.isLoading || snapshotDetailQuery.isFetching}
+                    outdatedBackend={!snapshotApiReady}
+                  />
+                )}
+              </div>
+            )
+          })
         ) : (
           <div className="workflow-muted">{copy.noSnapshots}</div>
         )}
       </div>
+    </div>
+  )
+}
+
+function SnapshotDetailPanel({
+  detail,
+  error,
+  loading,
+  outdatedBackend
+}: {
+  detail: VersionSnapshotDetail | null
+  error: boolean
+  loading: boolean
+  outdatedBackend: boolean
+}) {
+  const copy = useWorkflowCopy()
+
+  if (outdatedBackend) {
+    return <div className="workflow-snapshot-detail workflow-muted">{copy.snapshotOutdatedBackend}</div>
+  }
+
+  if (loading && !detail) {
+    return <div className="workflow-snapshot-detail workflow-muted">{copy.snapshotDetailsLoading}</div>
+  }
+
+  if (error) {
+    return <div className="workflow-snapshot-detail workflow-muted">{copy.snapshotDetailsFailed}</div>
+  }
+
+  if (!detail) {
+    return null
+  }
+
+  return (
+    <div className="workflow-snapshot-detail">
+      <div className="workflow-key-values">
+        <span>{copy.snapshotFullCommit}</span>
+        <strong>{detail.commit ?? copy.snapshotNoCommit}</strong>
+        <span>{copy.snapshotParent}</span>
+        <strong>{detail.parentCommit?.slice(0, 8) ?? '-'}</strong>
+        <span>{copy.snapshotAuthor}</span>
+        <strong>{detail.authorName || detail.authorEmail || '-'}</strong>
+        <span>{copy.snapshotFilesChanged}</span>
+        <strong>{snapshotChangeSummary(detail, copy.snapshotStatsUnavailable)}</strong>
+      </div>
+      {detail.body ? <p>{detail.body}</p> : null}
+      <div className="workflow-snapshot-files">
+        {detail.files.length ? (
+          detail.files.map(file => <SnapshotFileChangeRow file={file} key={`${detail.commit}-${file.path}`} />)
+        ) : (
+          <div className="workflow-muted">{copy.snapshotNoFiles}</div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SnapshotFileChangeRow({ file }: { file: SnapshotFileChange }) {
+  const copy = useWorkflowCopy()
+  const [open, setOpen] = useState(false)
+
+  return (
+    <div className="workflow-snapshot-file">
+      <button className="workflow-snapshot-file__header" onClick={() => setOpen(value => !value)} type="button">
+        <Codicon name={open ? 'chevron-down' : 'chevron-right'} size="0.75rem" />
+        <span title={file.path}>{file.path}</span>
+        <small>{snapshotFileStatusLabel(file.status)}</small>
+        <small>
+          +{file.insertions} -{file.deletions}
+        </small>
+      </button>
+      {open && (
+        <div className="workflow-snapshot-file__diff">
+          {file.isBinary ? (
+            <div className="workflow-muted">{copy.snapshotBinaryDiffHidden}</div>
+          ) : file.diff ? (
+            <pre>{file.diff}</pre>
+          ) : (
+            <div className="workflow-muted">{copy.noDiff}</div>
+          )}
+          {file.truncated ? <small>{copy.snapshotDiffTruncated}</small> : null}
+        </div>
+      )}
     </div>
   )
 }
@@ -3278,33 +3596,6 @@ function mergeEvents(previous: StreamEvent[], incoming: StreamEvent[]): StreamEv
   return [...byId.values()].sort((a, b) => a.timestamp - b.timestamp).slice(-500)
 }
 
-const FOLLOWABLE_RUN_STATUSES = new Set(['running', 'waiting_user_confirm', 'paused'])
-const RUNTIME_EVENT_TYPES = new Set<StreamEvent['type']>(['node_status', 'approval'])
-
-function latestWorkflowRuntimeNodeId(activeRun: ProjectBundle['latestRun'], events: StreamEvent[]): string | null {
-  if (activeRun?.currentNodeId) {
-    return activeRun.currentNodeId
-  }
-
-  if (!activeRun || !FOLLOWABLE_RUN_STATUSES.has(activeRun.status)) {
-    return null
-  }
-
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index]
-
-    if (!event.nodeId || !RUNTIME_EVENT_TYPES.has(event.type)) {
-      continue
-    }
-
-    if (!event.runId || event.runId === activeRun.id) {
-      return event.nodeId
-    }
-  }
-
-  return null
-}
-
 function fileChangeCanPreview(change: WorkflowNode['fileChanges'][number]): boolean {
   return change.previewable !== false && !change.isBinary && Boolean(change.diff)
 }
@@ -3511,6 +3802,20 @@ function formatTime(timestamp: number): string {
 
 function formatDate(timestamp: number): string {
   return new Date(timestamp * 1000).toLocaleString()
+}
+
+function snapshotFileStatusLabel(status: string): string {
+  const labels: Record<string, string> = {
+    added: 'A',
+    copied: 'C',
+    deleted: 'D',
+    modified: 'M',
+    renamed: 'R',
+    type_changed: 'T',
+    unmerged: 'U'
+  }
+
+  return labels[status] ?? status.slice(0, 1).toUpperCase()
 }
 
 function flattenModelChoices(options: ModelOptionsResponse | null): Array<{ model: string; provider: string }> {

@@ -141,7 +141,30 @@ export interface VersionSnapshot {
   label: string
   reason: string
   commit: string | null
+  shortCommit?: string | null
+  parentCommit?: string | null
+  authorName?: string
+  authorEmail?: string
+  subject?: string
+  body?: string
+  fileCount?: number
+  insertions?: number
+  deletions?: number
   createdAt: number
+}
+
+export interface SnapshotFileChange {
+  path: string
+  status: string
+  insertions: number
+  deletions: number
+  diff: string
+  truncated: boolean
+  isBinary: boolean
+}
+
+export interface VersionSnapshotDetail extends VersionSnapshot {
+  files: SnapshotFileChange[]
 }
 
 export interface StreamEvent {
@@ -177,6 +200,8 @@ export interface ProjectBundle {
   skills: SkillBinding[]
   artifacts: Artifact[]
   snapshots: VersionSnapshot[]
+  snapshotApiVersion?: number
+  rollbackBackupCommit: string | null
   latestRun: ExecutionRun | null
   error: string | null
 }
