@@ -11,7 +11,7 @@ import { useAppCopy } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, HelpCircle, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
+import { $clarifyRequest, $planningMode, addClarifyEntry, clearClarifyRequest } from '@/store/workflow-planning'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 
@@ -225,6 +225,14 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
           answer
         })
         triggerHaptic('submit')
+        if ($planningMode.get()) {
+          addClarifyEntry({
+            question,
+            choices: choices.length > 0 ? choices : null,
+            answer,
+            timestamp: Date.now()
+          })
+        }
         clearClarifyRequest(matchingRequest.requestId, matchingRequest.sessionId)
         // The matching tool.complete will land shortly after, swapping this
         // panel for the ToolFallback view above.
@@ -233,7 +241,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         setSubmitting(false)
       }
     },
-    [copy, gateway, matchingRequest, ready]
+    [choices, copy, gateway, matchingRequest, question, ready]
   )
 
   const handleTextareaKey = useCallback(

@@ -16,7 +16,7 @@ import {
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
-import { setClarifyRequest } from '@/store/clarify'
+import { $planningMode, advancePhase, setClarifyRequest } from '@/store/workflow-planning'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
@@ -830,6 +830,10 @@ export function useMessageStream({
             choices: Array.isArray(payload?.choices) ? payload!.choices!.filter(c => typeof c === 'string') : null,
             sessionId: sessionId ?? null
           })
+
+          if ($planningMode.get()) {
+            advancePhase('clarify')
+          }
 
           // The transcript only renders the active session, so a background
           // clarify is otherwise invisible (the row just keeps spinning like

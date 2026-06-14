@@ -8,15 +8,14 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation } from 'react-router-dom'
 
-import { type WorkflowCopy, workflowCopyFor } from '@/app/workflows/i18n'
+import { WorkflowPlanningToggle } from '@/components/chat/workflow-planning-toggle'
 import { Thread } from '@/components/assistant-ui/thread'
 import { Backdrop } from '@/components/Backdrop'
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Switch } from '@/components/ui/switch'
 import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { quickModelOptions, sessionTitle, toRuntimeMessage } from '@/lib/chat-runtime'
@@ -42,10 +41,18 @@ import {
   $sessions,
   sessionPinId
 } from '@/store/session'
-import { $workflowLanguage } from '@/store/workflow-language'
+import {
+  $planningClarifyHistory,
+  $planningDraft,
+  $planningMode,
+  $planningPhase,
+  $planningReferences,
+  advancePhase
+} from '@/store/workflow-planning'
+import type { WorkflowPlanningContext } from '@/store/workflow-planning'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
-import { NEW_CHAT_ROUTE, routeSessionId } from '../routes'
+import { routeSessionId } from '../routes'
 import { titlebarHeaderBaseClass, titlebarHeaderShadowClass } from '../shell/titlebar'
 
 import { ChatDropOverlay } from './chat-drop-overlay'
@@ -53,7 +60,7 @@ import { ChatSwapOverlay } from './chat-swap-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
 import { requestComposerInsert, requestComposerInsertRefs } from './composer/focus'
 import { droppedFileInlineRef, type SessionDragPayload, sessionInlineRef } from './composer/inline-refs'
-import type { ChatBarState, WorkflowPlanningSubmitContext } from './composer/types'
+import type { ChatBarState } from './composer/types'
 import type { DroppedFile } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
@@ -77,7 +84,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onRemoveAttachment: (id: string) => void
   onSubmit: (
     text: string,
-    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean; workflowPlanning?: WorkflowPlanningSubmitContext }
+    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean; planningContext?: WorkflowPlanningContext }
   ) => Promise<boolean> | boolean
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
   onEdit: (message: AppendMessage) => Promise<void>
@@ -91,37 +98,6 @@ interface ChatHeaderProps {
   onDeleteSelectedSession: () => void
   onToggleSelectedPin: () => void
   selectedSessionId: null | string
-}
-
-type ChatMode = 'session' | 'workflow'
-
-const WORKFLOW_MODE_PARAM = 'workflow'
-
-function workflowReferencesFromAttachments(attachments: readonly ComposerAttachment[]): string[] {
-  const refs: string[] = []
-  const seen = new Set<string>()
-
-  for (const attachment of attachments) {
-    if (attachment.kind === 'terminal') {
-      continue
-    }
-
-    const value =
-      attachment.path ||
-      (attachment.kind === 'url'
-        ? attachment.refText?.replace(/^@url:/, '').replace(/^`|`$/g, '') || attachment.detail || attachment.label
-        : attachment.detail || attachment.refText?.replace(/^@(file|folder|image):/, '').replace(/^`|`$/g, ''))
-
-    const trimmed = (value || '').trim()
-    if (!trimmed || seen.has(trimmed)) {
-      continue
-    }
-
-    seen.add(trimmed)
-    refs.push(trimmed)
-  }
-
-  return refs
 }
 
 function ChatHeader({
@@ -181,66 +157,6 @@ function ChatHeader({
   )
 }
 
-function WorkflowChatFooter({
-  copy,
-  disabled,
-  onChooseRoot,
-  onEnabledChange,
-  onResetRoot,
-  root,
-  workflowEnabled
-}: {
-  copy: WorkflowCopy
-  disabled: boolean
-  onChooseRoot: () => void
-  onEnabledChange: (enabled: boolean) => void
-  onResetRoot: () => void
-  root: string
-  workflowEnabled: boolean
-}) {
-  return (
-    <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-      <div className="flex min-w-0 flex-wrap items-center gap-2">
-        <label className="flex shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-full bg-background/35 px-2 py-1 text-foreground/85">
-          <Switch
-            checked={workflowEnabled}
-            disabled={disabled}
-            onCheckedChange={onEnabledChange}
-            size="xs"
-          />
-          <span className="font-medium">{copy.workflowMode}</span>
-        </label>
-        {workflowEnabled && (
-          <div className="flex min-w-0 items-center gap-1.5 rounded-full bg-background/35 px-2 py-1">
-            <Codicon className="shrink-0 text-muted-foreground" name="folder" size="0.8125rem" />
-            <span className="shrink-0 font-medium text-foreground/85">{copy.projectDirectory}</span>
-            <button
-              className="min-w-0 truncate text-left text-muted-foreground hover:text-foreground"
-              disabled={disabled}
-              onClick={onChooseRoot}
-              title={root || copy.projectDirectoryPlaceholder}
-              type="button"
-            >
-              {root || copy.projectDirectoryPlaceholder}
-            </button>
-            {root && (
-              <button
-                aria-label={copy.clearSelectedFile}
-                className="grid size-4 place-items-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
-                disabled={disabled}
-                onClick={onResetRoot}
-                type="button"
-              >
-                <Codicon name="close" size="0.625rem" />
-              </button>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
 export function ChatView({
   className,
   gateway,
@@ -265,7 +181,6 @@ export function ChatView({
   onTranscribeAudio
 }: ChatViewProps) {
   const location = useLocation()
-  const navigate = useNavigate()
   const activeSessionId = useStore($activeSessionId)
   const awaitingResponse = useStore($awaitingResponse)
   const busy = useStore($busy)
@@ -281,15 +196,9 @@ export function ChatView({
   const introSeed = useStore($introSeed)
   const messages = useStore($messages)
   const selectedSessionId = useStore($selectedStoredSessionId)
-  const workflowCopy = workflowCopyFor(useStore($workflowLanguage))
+  const planningMode = useStore($planningMode)
   const runtimeMessageCacheRef = useRef(new WeakMap<ChatMessage, ThreadMessage>())
   const isRoutedSessionView = Boolean(routeSessionId(location.pathname))
-  const modeParam = new URLSearchParams(location.search).get('mode')
-  const workflowModeRequested = modeParam === WORKFLOW_MODE_PARAM
-  const workflowModeAllowed = true
-  const [chatMode, setChatMode] = useState<ChatMode>(workflowModeRequested ? 'workflow' : 'session')
-  const workflowModeActive = workflowModeAllowed && chatMode === 'workflow'
-  const [workflowRoot, setWorkflowRoot] = useState('')
   const [localComposerSubmitted, setLocalComposerSubmitted] = useState(false)
 
   const showIntro =
@@ -349,41 +258,9 @@ export function ChatView({
     [contextSuggestions, currentModel, currentProvider, gatewayOpen, quickModels]
   )
 
-  const resetWorkflowPlanningState = useCallback(() => {
-    setWorkflowRoot('')
-  }, [])
-
-  useEffect(() => {
-    if (workflowModeRequested) {
-      setChatMode(current => (current === 'workflow' ? current : 'workflow'))
-      return
-    }
-
-    if (!selectedSessionId && !activeSessionId && !isRoutedSessionView) {
-      setChatMode(current => (current === 'session' ? current : 'session'))
-      resetWorkflowPlanningState()
-    }
-  }, [activeSessionId, isRoutedSessionView, resetWorkflowPlanningState, selectedSessionId, workflowModeRequested])
-
   useEffect(() => {
     setLocalComposerSubmitted(false)
   }, [location.pathname, location.search, selectedSessionId])
-
-  const setMode = useCallback(
-    (mode: ChatMode) => {
-      if (mode === 'session') {
-        resetWorkflowPlanningState()
-      }
-
-      setChatMode(mode)
-      if (!selectedSessionId && !activeSessionId && !isRoutedSessionView) {
-        navigate(mode === 'workflow' ? `${NEW_CHAT_ROUTE}?mode=${WORKFLOW_MODE_PARAM}` : NEW_CHAT_ROUTE, {
-          replace: location.pathname === NEW_CHAT_ROUTE
-        })
-      }
-    },
-    [activeSessionId, isRoutedSessionView, location.pathname, navigate, resetWorkflowPlanningState, selectedSessionId]
-  )
 
   const runtimeMessageRepository = useMemo(() => {
     const items: { message: ThreadMessage; parentId: string | null }[] = []
@@ -497,23 +374,7 @@ export function ChatView({
                 busy={busy}
                 cwd={currentCwd}
                 disabled={!gatewayOpen}
-                footerSlot={
-                  workflowModeAllowed ? (
-                    <WorkflowChatFooter
-                      copy={workflowCopy}
-                      disabled={busy}
-                      onChooseRoot={() => {
-                        void window.hermesDesktop
-                          ?.selectPaths({ directories: true, title: workflowCopy.chooseWorkflowProjectDirectory })
-                          .then(paths => paths?.[0] && setWorkflowRoot(paths[0]))
-                      }}
-                      onEnabledChange={enabled => setMode(enabled ? 'workflow' : 'session')}
-                      onResetRoot={() => setWorkflowRoot('')}
-                      root={workflowRoot}
-                      workflowEnabled={workflowModeActive}
-                    />
-                  ) : null
-                }
+                footerSlot={<WorkflowPlanningToggle busy={busy} />}
                 focusKey={activeSessionId}
                 gateway={gateway}
                 maxRecordingSeconds={maxVoiceRecordingSeconds}
@@ -529,33 +390,32 @@ export function ChatView({
                 onRemoveAttachment={onRemoveAttachment}
                 onSubmit={(text, options) => {
                   setLocalComposerSubmitted(true)
-                  if (!workflowModeActive) {
+                  if (!planningMode) {
                     return onSubmit(text, options)
                   }
 
-                  const references = workflowReferencesFromAttachments(options?.attachments ?? [])
+                  const currentPhase = $planningPhase.get()
+                  if (currentPhase === 'idle') {
+                    advancePhase('explore')
+                  }
+                  if ($planningDraft.get() !== null) {
+                    advancePhase('refine')
+                  }
+
                   return onSubmit(text, {
                     ...options,
-                    workflowPlanning: {
-                      references,
-                      root: workflowRoot || undefined
+                    planningContext: {
+                      references: $planningReferences.get(),
+                      phase: $planningPhase.get(),
+                      clarifyHistory: $planningClarifyHistory.get()
                     }
                   })
                 }}
                 onTranscribeAudio={onTranscribeAudio}
-                placeholderOverride={workflowModeActive ? workflowCopy.taskPlaceholder : undefined}
                 placement={showCenteredComposer ? 'center' : 'bottom'}
                 queueSessionKey={selectedSessionId || activeSessionId}
                 sessionId={activeSessionId}
-                state={
-                  workflowModeActive
-                    ? {
-                        ...chatBarState,
-                        tools: { ...chatBarState.tools, label: workflowCopy.projectReferences }
-                      }
-                    : chatBarState
-                }
-                submitLabelOverride={workflowModeActive ? workflowCopy.startPlanning : undefined}
+                state={chatBarState}
               />
             </Suspense>
           )}

@@ -9,7 +9,6 @@ import {
   useAui,
   useAuiState
 } from '@assistant-ui/react'
-import type { ReadonlyJSONObject } from 'assistant-stream/utils'
 import { useStore } from '@nanostores/react'
 import { IconPlayerStopFilled } from '@tabler/icons-react'
 import {
@@ -57,7 +56,7 @@ import { HoistedTodoPanel, todosFromMessageContent } from '@/components/assistan
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { UserMessageText } from '@/components/assistant-ui/user-message-text'
-import { WorkflowDraftTool } from '@/components/assistant-ui/workflow-draft-tool'
+import { WorkflowDraftCard } from '@/components/assistant-ui/workflow-draft-card'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
@@ -123,99 +122,6 @@ function messageContentText(content: unknown): string {
 const INTERRUPTED_ONLY_RE = /^_?\[interrupted\]_?$/i
 
 const isInterruptedOnlyMessage = (text: string) => INTERRUPTED_ONLY_RE.test(text.trim())
-
-const WORKFLOW_DRAFT_TOOL_NAMES = new Set(['workflow_draft_propose', 'workflow_draft.propose'])
-
-interface HoistedWorkflowDraftPart {
-  args: ReadonlyJSONObject
-  argsText?: string
-  isError?: boolean
-  result?: unknown
-  toolCallId: string
-  toolName: string
-}
-
-function asReadonlyJsonObject(value: unknown): ReadonlyJSONObject {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as ReadonlyJSONObject) : {}
-}
-
-function asToolResultRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value === 'string') {
-    try {
-      const parsed = JSON.parse(value)
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as Record<string, unknown>) : null
-    } catch {
-      return null
-    }
-  }
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
-}
-
-function workflowDraftPartState(part: HoistedWorkflowDraftPart): 'pending' | 'invalid' | 'valid' {
-  if (part.result === undefined && !part.isError) {
-    return 'pending'
-  }
-  const result = asToolResultRecord(part.result)
-  if (part.isError || result?.error || result?.draftPreviewOmitted || result?.success === false) {
-    return 'invalid'
-  }
-  const workflow = asToolResultRecord(result?.workflow)
-  return Array.isArray(workflow?.nodes) && workflow.nodes.length > 0 ? 'valid' : 'invalid'
-}
-
-function compactWorkflowDraftParts(parts: HoistedWorkflowDraftPart[]): HoistedWorkflowDraftPart[] {
-  const validParts = parts.filter(part => workflowDraftPartState(part) === 'valid')
-  if (validParts.length > 0) {
-    return validParts
-  }
-
-  let lastInvalidIndex = -1
-  parts.forEach((part, index) => {
-    if (workflowDraftPartState(part) === 'invalid') {
-      lastInvalidIndex = index
-    }
-  })
-
-  return parts.filter((part, index) => workflowDraftPartState(part) !== 'invalid' || index === lastInvalidIndex)
-}
-
-function workflowDraftPartsFromContent(content: unknown): HoistedWorkflowDraftPart[] {
-  if (!Array.isArray(content)) {
-    return []
-  }
-
-  const parts = content.flatMap((part, index) => {
-    if (!part || typeof part !== 'object') {
-      return []
-    }
-
-    const row = part as {
-      args?: unknown
-      argsText?: unknown
-      isError?: unknown
-      result?: unknown
-      toolCallId?: unknown
-      toolName?: unknown
-      type?: unknown
-    }
-
-    if (row.type !== 'tool-call' || typeof row.toolName !== 'string' || !WORKFLOW_DRAFT_TOOL_NAMES.has(row.toolName)) {
-      return []
-    }
-
-    return [
-      {
-        args: asReadonlyJsonObject(row.args),
-        argsText: typeof row.argsText === 'string' ? row.argsText : '',
-        isError: Boolean(row.isError),
-        result: row.result,
-        toolCallId: typeof row.toolCallId === 'string' ? row.toolCallId : `workflow-draft-${index}`,
-        toolName: row.toolName
-      }
-    ]
-  })
-  return compactWorkflowDraftParts(parts)
-}
 
 export const Thread: FC<{
   clampToComposer?: boolean
@@ -309,7 +215,6 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
   const hoistedTodos = useMemo(() => todosFromMessageContent(content), [content])
-  const hoistedWorkflowDrafts = useMemo(() => workflowDraftPartsFromContent(content), [content])
 
   const previewTargets = useMemo(() => {
     if (!messageText || !/(https?:\/\/|file:\/\/)/i.test(messageText)) {
@@ -345,21 +250,6 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
       >
         {hoistedTodos.length > 0 && <HoistedTodoPanel todos={hoistedTodos} />}
         <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
-        {hoistedWorkflowDrafts.map(part => (
-          <WorkflowDraftTool
-            addResult={() => {}}
-            args={part.args}
-            argsText={part.argsText ?? ''}
-            isError={part.isError}
-            key={part.toolCallId}
-            result={part.result}
-            resume={() => {}}
-            status={part.result === undefined && !part.isError ? { type: 'running' } : { type: 'complete' }}
-            type="tool-call"
-            toolCallId={part.toolCallId}
-            toolName={part.toolName}
-          />
-        ))}
         {previewTargets.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {previewTargets.map(target => (
@@ -446,7 +336,7 @@ const ChainToolFallback: FC<ToolCallMessagePartProps> = props => {
   }
 
   if (props.toolName === 'workflow_draft_propose' || props.toolName === 'workflow_draft.propose') {
-    return null
+    return <WorkflowDraftCard {...props} />
   }
 
   return <ToolFallback {...props} />

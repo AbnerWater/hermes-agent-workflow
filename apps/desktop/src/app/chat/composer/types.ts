@@ -1,5 +1,6 @@
 import type { HermesGateway } from '@/hermes'
 import type { ComposerAttachment } from '@/store/composer'
+import type { WorkflowPlanningContext } from '@/store/workflow-planning'
 import type { ReactNode } from 'react'
 
 import type { DroppedFile } from '../hooks/use-composer-actions'
@@ -28,11 +29,6 @@ export interface ChatBarState {
   voice: { enabled: boolean; active: boolean }
 }
 
-export interface WorkflowPlanningSubmitContext {
-  references: string[]
-  root?: string
-}
-
 export interface ChatBarProps {
   busy: boolean
   disabled: boolean
@@ -59,7 +55,7 @@ export interface ChatBarProps {
   onRemoveAttachment?: (id: string) => void
   onSubmit: (
     value: string,
-    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean; workflowPlanning?: WorkflowPlanningSubmitContext }
+    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean; planningContext?: WorkflowPlanningContext }
   ) => Promise<boolean> | boolean
   onTranscribeAudio?: (audio: Blob) => Promise<string>
 }
